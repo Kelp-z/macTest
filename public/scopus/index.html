@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Scopus 爬虫控制台</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 1400px; margin: 0 auto; background: #f5f5f5; }
+        .container { margin-bottom: 30px; }
+        h1 { color: #2c3e50; margin-bottom: 20px; }
+        h3 { color: #2c3e50; margin: 15px 0 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #34495e; }
+        textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; min-height: 100px; resize: vertical; font-family: Consolas, monospace; }
+        .btn {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            font-size: 14px;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled { background: #95a5a6; cursor: not-allowed; opacity: 0.7; }
+        .btn-reset { background: #e74c3c; }
+        .btn-restart { background: #f39c12; }
+        .btn-stop { background: #e74c3c; }
+        .button-group { margin: 15px 0; }
+
+        .status-panel {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status-item { margin-bottom: 8px; font-size: 14px; }
+        .status-item strong { min-width: 100px; display: inline-block; }
+
+        .progress-bar {
+            height: 10px;
+            background: #eee;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #2ecc71;
+            transition: width 0.3s ease;
+        }
+
+        .logs-panel {
+            margin: 20px 0;
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .log-area {
+            width: 100%;
+            height: 300px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            overflow-y: auto;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            white-space: pre-wrap;
+        }
+        .log-info { color: #569cd6; margin: 2px 0; }
+        .log-success { color: #6a9955; margin: 2px 0; }
+        .log-warn { color: #dcdcaa; margin: 2px 0; }
+        .log-error { color: #f48771; margin: 2px 0; font-weight: bold; }
+
+        .result-panel {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th { background: #f2f2f2; font-weight: bold; }
+        tr:hover { background: #f5f5f5; }
+
+        .file-path {
+            color: #3498db;
+            word-break: break-all;
+            font-family: Consolas, monospace;
+            font-size: 12px;
+        }
+        .captcha-area {
+            border: 2px solid #ff9800;
+            padding: 15px;
+            margin: 20px 0;
+            background: #fff3e0;
+            border-radius: 4px;
+        }
+        .hidden { display: none; }
+        .flex-row { display: flex; align-items: center; gap: 10px; }
+        .tag {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .tag-running { background: #2ecc71; color: white; }
+        .tag-stopped { background: #95a5a6; color: white; }
+        .tag-warning { background: #f39c12; color: white; }
+        .manual-mode-area {
+            border: 2px solid #f39c12;
+            padding: 20px;
+            margin: 20px 0;
+            background: #fff3e0;
+            border-radius: 4px;
+        }
+        .small-text {
+            font-size: 0.9em;
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+        .hidden { display: none; }
+    </style>
+<!--    <script src="/socket.io/socket.io.js"></script>-->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <h1>📚 Scopus 爬虫控制台</h1>
+
+    <!-- 关键词输入区域 -->
+    <div class="form-group">
+        <label for="keywords">📝 检索关键词（每行一个）：</label>
+        <textarea id="keywords" rows="5">From pathology to therapy: A comprehensive review of ATRX mutation related molecular functions and disorders
+Enhancing Cybersecurity Defenses in Healthcare Using AI: A Pivotal Role in Fortifying Digital Health Infrastructure
+PBertKla: a protein large language model for predicting human lysine lactylation sites</textarea>
+    </div>
+
+    <!-- 按钮组 -->
+    <div class="button-group">
+        <button id="startBtn" class="btn">🚀 启动爬虫</button>
+        <button id="stopBtn" class="btn btn-stop" disabled>⏹️ 停止爬虫</button>
+        <button id="resetBtn" class="btn btn-reset">🗑️ 重置状态</button>
+    </div>
+
+    <!-- 状态面板 -->
+    <div class="status-panel">
+        <div class="flex-row" style="margin-bottom: 15px;">
+            <h3 style="margin: 0;">📊 运行状态</h3>
+            <span id="statusTag" class="tag tag-stopped">未运行</span>
+            <span id="stopRequestedTag" class="tag tag-warning hidden">停止请求中</span>
+        </div>
+        <div class="status-item">📈 进度：<span id="progressText">0%</span></div>
+        <div class="progress-bar">
+            <div id="progressBar" class="progress-fill" style="width: 0%;"></div>
+        </div>
+        <div class="status-item">❌ 错误信息：<span id="errorMsg" class="log-error"></span></div>
+    </div>
+
+    <!-- 验证码等待区域 -->
+    <div id="captcha-area" class="captcha-area hidden">
+        <h3>🔐 验证码输入</h3>
+        <img id="captcha-image" src="" alt="验证码" style="border:1px solid #999; max-width:200px;"><br>
+        <input type="text" id="captcha-input" placeholder="输入验证码">
+        <button onclick="submitCaptcha()" class="btn">提交</button>
+    </div>
+    <!-- 手动模式提示区域 -->
+    <div id="manual-mode-area" class="manual-mode-area hidden">
+        <h3>🖐️ 手动操作</h3>
+        <p>请手动在浏览器中打开一个可用的 Scopus 页面（例如点击任意镜像链接）。</p>
+        <p class="small-text">若该时间段无可用站点，可停止检索，待合适时间重新启动检索任务。</p>
+        <button id="manualConfirmBtn" class="btn">✅ 我已打开 Scopus 页面，继续</button>
+    </div>
+    <!-- 日志面板 -->
+    <div class="logs-panel">
+        <h3>📋 执行日志</h3>
+        <div id="logArea" class="log-area"></div>
+    </div>
+
+    <!-- 结果面板 -->
+    <div class="result-panel">
+        <h3>📊 检索结果</h3>
+        <div class="status-item">✅ 成功条数：<strong><span id="successCount">0</span></strong></div>
+        <div class="status-item">❌ 失败条数：<strong><span id="failedCount">0</span></strong></div>
+
+        <h3 style="margin-top: 20px;">📁 生成文件</h3>
+        <div class="status-item">📄 结果Excel：<span id="resultExcel" class="file-path">-</span></div>
+
+        <h3 style="margin-top: 20px;">📄 成功结果预览</h3>
+        <table>
+            <thead>
+            <tr>
+                <th>EID</th>
+                <th>是否收录</th>
+                <th>论文标题</th>
+                <th>检索时间</th>
+            </tr>
+            </thead>
+            <tbody id="resultTable">
+            <tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    //  全局变量
+    const socket = io();
+    let currentCaptchaId = null;
+    let displayedLogIndex = 0;
+    let pollTimer = null;
+    let isPolling = false;
+
+    // DOM元素
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const keywordsEl = document.getElementById('keywords');
+    const statusTag = document.getElementById('statusTag');
+    const stopRequestedTag = document.getElementById('stopRequestedTag');
+    const progressTextEl = document.getElementById('progressText');
+    const progressBarEl = document.getElementById('progressBar');
+    const errorMsgEl = document.getElementById('errorMsg');
+    const logAreaEl = document.getElementById('logArea');
+    const successCountEl = document.getElementById('successCount');
+    const failedCountEl = document.getElementById('failedCount');
+    const resultExcelEl = document.getElementById('resultExcel');
+    const resultTableEl = document.getElementById('resultTable');
+    const captchaArea = document.getElementById('captcha-area');
+    const captchaImage = document.getElementById('captcha-image');
+    const captchaInput = document.getElementById('captcha-input');
+
+    let manualModeTimer = null;
+    //  Socket.io 监听
+    socket.on('captcha-required', (data) => {
+        currentCaptchaId = data.captchaId;
+        captchaImage.src = data.imageUrl;
+        captchaArea.classList.remove('hidden');
+    });
+
+    //  工具函数
+    function getCurrentTime() {
+        const now = new Date();
+        return `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+    }
+
+    function addLogToUI(type, content) {
+        const logHtml = `<div class="log-${type}">[${getCurrentTime()}] ${content}</div>`;
+        logAreaEl.innerHTML += logHtml;
+        logAreaEl.scrollTop = logAreaEl.scrollHeight;
+    }
+
+    function updateLogs(logs) {
+        if (!logs || logs.length === 0) return;
+        if (logs.length > displayedLogIndex) {
+            const newLogs = logs.slice(displayedLogIndex);
+            newLogs.forEach(log => {
+                // 根据消息内容简单判断类型（可扩展）
+                let type = 'info';
+                if (log.message.includes('✅')) type = 'success';
+                else if (log.message.includes('❌')) type = 'error';
+                else if (log.message.includes('⚠️') || log.message.includes('⏹️')) type = 'warn';
+                const logHtml = `<div class="log-${type}">[${new Date(log.time).toLocaleTimeString()}] ${log.message}</div>`;
+                logAreaEl.innerHTML += logHtml;
+            });
+            displayedLogIndex = logs.length;
+            logAreaEl.scrollTop = logAreaEl.scrollHeight;
+        }
+    }
+
+    function updateUI(data) {
+        const { isRunning, progress, logs, result, filePaths, error, waitingForCaptcha, stopRequested } = data;
+
+        // 更新日志
+        if (logs) updateLogs(logs);
+
+        // 更新状态标签
+        if (isRunning) {
+            statusTag.textContent = '运行中';
+            statusTag.className = 'tag tag-running';
+        } else {
+            statusTag.textContent = '已停止';
+            statusTag.className = 'tag tag-stopped';
+        }
+
+        // 停止请求中标签
+        if (stopRequested) {
+            stopRequestedTag.classList.remove('hidden');
+        } else {
+            stopRequestedTag.classList.add('hidden');
+        }
+
+        // 进度
+        progressTextEl.textContent = progress + '%';
+        progressBarEl.style.width = progress + '%';
+
+        // 错误
+        errorMsgEl.textContent = error || '';
+
+        // 按钮状态
+        startBtn.disabled = isRunning;
+        stopBtn.disabled = !isRunning;
+
+
+        // 验证码区域
+        if (waitingForCaptcha && data.captchaId && data.captchaImagePath) {
+            currentCaptchaId = data.captchaId;
+            captchaImage.src = data.captchaImagePath;
+            captchaArea.classList.remove('hidden');
+        } else {
+            captchaArea.classList.add('hidden');
+        }
+        if (data.manualModeActive) {
+            document.getElementById('manual-mode-area').classList.remove('hidden');
+            if (!manualModeTimer) {
+                manualModeTimer = setTimeout(() => {
+                    if (!document.getElementById('manual-mode-area').classList.contains('hidden')) {
+                        alert('手动操作超时（60秒），若无可用的 Scopus 页面，可点击停止按钮结束任务。');
+                    }
+                    manualModeTimer = null;
+                }, 60000);
+            }
+        } else {
+            document.getElementById('manual-mode-area').classList.add('hidden');
+            if (manualModeTimer) {
+                clearTimeout(manualModeTimer);
+                manualModeTimer = null;
+            }
+        }
+        // 结果统计
+        if (result) {
+            const successList = result.filter(item => item.isRecruit === 'true');
+            const failedList = result.filter(item => item.isRecruit === 'false');
+            successCountEl.textContent = successList.length;
+            failedCountEl.textContent = failedList.length;
+
+            // 预览表格
+            if (successList.length > 0) {
+                let tableHtml = '';
+                successList.slice(0, 10).forEach(item => {
+                    tableHtml += `
+                            <tr>
+                                <td>${item.eid || '-'}</td>
+                                <td>${item.isRecruit}</td>
+                                <td>${item.title.substring(0, 50)}...</td>
+                                <td>${item.searchTime}</td>
+                            </tr>
+                        `;
+                });
+                resultTableEl.innerHTML = tableHtml;
+            } else {
+                resultTableEl.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>';
+            }
+        }
+
+        // 文件路径
+        if (filePaths && filePaths.length > 0) {
+            resultExcelEl.textContent = filePaths[0];
+        } else {
+            resultExcelEl.textContent = '-';
+        }
+    }
+
+    //  API 请求
+    async function apiRequest(url, method = 'GET', data = null) {
+        const options = {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+        };
+        if (data) options.body = JSON.stringify(data);
+
+        const res = await fetch(url, options);
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.msg || '请求失败');
+        return json;
+    }
+
+    //  轮询状态
+    function startPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(async () => {
+            try {
+                const res = await apiRequest('/api/scopus/crawl/status');
+                if (res.code === 200) updateUI(res.data);
+            } catch (err) {
+                console.error('轮询失败', err);
+                addLogToUI('error', `状态轮询失败: ${err.message}`);
+            }
+        }, 1000);
+    }
+
+    //  按钮事件
+    startBtn.addEventListener('click', async () => {
+        const keywords = keywordsEl.value.split('\n').map(k => k.trim()).filter(k => k);
+        if (keywords.length === 0) {
+            alert('请输入至少一个关键词');
+            return;
+        }
+
+        displayedLogIndex = 0;
+        logAreaEl.innerHTML = '';
+        addLogToUI('info', `启动爬虫，关键词：${keywords.join('; ')}`);
+
+        try {
+            const res = await apiRequest('/api/scopus/crawl/start', 'POST', { keywords });
+            addLogToUI('success', res.msg);
+            startPolling();
+        } catch (err) {
+            addLogToUI('error', `启动失败: ${err.message}`);
+        }
+    });
+
+    stopBtn.addEventListener('click', async () => {
+        if (!confirm('确定要停止当前爬虫吗？')) return;
+        addLogToUI('warn', '发送停止请求...');
+        try {
+            const res = await apiRequest('/api/scopus/crawl/stop', 'POST');
+            addLogToUI('success', res.msg);
+        } catch (err) {
+            addLogToUI('error', `停止失败: ${err.message}`);
+        }
+    });
+
+    resetBtn.addEventListener('click', async () => {
+        if (!confirm('确定要重置所有状态吗？')) return;
+        try {
+            const res = await apiRequest('/api/scopus/crawl/reset', 'POST');
+            displayedLogIndex = 0;
+            logAreaEl.innerHTML = '';
+            addLogToUI('success', res.msg);
+            // 重新获取一次状态
+            const statusRes = await apiRequest('/api/scopus/crawl/status');
+            if (statusRes.code === 200) updateUI(statusRes.data);
+        } catch (err) {
+            alert(`重置失败: ${err.message}`);
+        }
+    });
+
+    // 提交验证码
+    window.submitCaptcha = async function() {
+        const code = captchaInput.value.trim();
+        if (!code || !currentCaptchaId) return;
+
+        try {
+            const res = await apiRequest('/api/scopus/captcha/submit', 'POST', {
+                captchaId: currentCaptchaId,
+                captchaCode: code
+            });
+            if (res.code === 200) {
+                captchaArea.classList.add('hidden');
+                captchaInput.value = '';
+                currentCaptchaId = null;
+                addLogToUI('success', '验证码已提交');
+            } else {
+                alert(res.msg);
+            }
+        } catch (err) {
+            alert(`提交失败: ${err.message}`);
+        }
+    };
+
+    // 初始化
+    window.addEventListener('load', async () => {
+        try {
+            const res = await apiRequest('/api/scopus/crawl/status');
+            if (res.code === 200) {
+                updateUI(res.data);
+                if (res.data.isRunning) startPolling();
+            }
+        } catch (err) {
+            addLogToUI('error', `无法连接到后端: ${err.message}`);
+        }
+    });
+    document.getElementById('manualConfirmBtn').addEventListener('click', async () => {
+        try {
+            const res = await apiRequest('/api/scopus/crawl/manual-confirm', 'POST');
+            if (res.code === 200) {
+                document.getElementById('manual-mode-area').classList.add('hidden');
+                addLogToUI('success', '已确认手动操作，继续执行');
+            } else {
+                alert(res.msg);
+            }
+        } catch (err) {
+            alert('确认失败: ' + err.message);
+        }
+    });
+</script>
+</body>
+</html>

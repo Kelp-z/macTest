@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.5.1/sockjs.min.js"></script>
+  <meta charset="UTF-8">
+  <title>谷歌学术检索管理后台</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 1400px; margin: 0 auto; }
+    .container { margin-bottom: 30px; }
+    h1 { color: #2c3e50; margin-bottom: 20px; }
+    h2 { color: #2c3e50; margin: 15px 0 15px; font-size: 18px; }
+    h3 { color: #2c3e50; margin: 15px 0 10px; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; color: #34495e; }
+    textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; min-height: 100px; resize: vertical; }
+    .btn {
+      padding: 10px 20px;
+      background: #3498db;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 10px;
+      font-size: 14px;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:disabled { background: #95a5a6; cursor: not-allowed; opacity: 0.7; }
+    .btn-reset { background: #e74c3c; }
+    .btn-restart { background: #f39c12; }
+    .btn-take-task { background: #27ae60; } /* 接取任务按钮样式 */
+    .status-panel { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa; }
+    .status-item { margin-bottom: 8px; }
+    .progress-bar { height: 10px; background: #eee; border-radius: 5px; overflow: hidden; margin: 10px 0; }
+    .progress-fill { height: 100%; background: #2ecc71; transition: width 0.3s ease; }
+    .logs-panel { margin: 20px 0; }
+    .log-area {
+      width: 100%;
+      height: 300px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-y: auto;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      white-space: pre-wrap;
+    }
+    .log-info { color: #569cd6; margin: 2px 0; }
+    .log-success { color: #6a9955; margin: 2px 0; }
+    .log-warn { color: #dcdcaa; margin: 2px 0; }
+    .log-error { color: #f48771; margin: 2px 0; font-weight: bold; }
+    .file-path { color: #3498db; word-break: break-all; font-family: Consolas, monospace; font-size: 12px; }
+    .result-panel { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+    /* 待接取任务面板样式 */
+    .task-panel { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa; }
+    .task-list { margin-top: 10px; }
+    .task-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      margin-bottom: 8px;
+      background: white;
+      border: 1px solid #eee;
+      border-radius: 4px;
+    }
+    .task-info { flex: 1; }
+    .task-info p { margin: 4px 0; font-size: 14px; }
+    .task-info span { font-weight: bold; color: #2c3e50; }
+    .task-actions { margin-left: 15px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background: #f2f2f2;
+      font-weight: bold;
+    }
+    tr:hover { background: #f5f5f5; }
+    .button-group { margin: 15px 0; }
+    .mode-selector { margin: 10px 0; display: flex; gap: 20px; align-items: center; }
+    .mode-option { display: flex; align-items: center; gap: 5px; }
+    .mode-option input { cursor: pointer; }
+    .hint-text { font-size: 12px; color: #666; margin-top: 5px; font-style: italic; }
+    .no-tasks { text-align: center; color: #666; padding: 20px; font-style: italic; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>谷歌学术检索管理后台</h1>
+
+  <!-- 待接取任务展示区域 -->
+  <div class="task-panel">
+    <h2>📋 待接取任务列表</h2>
+    <div id="pendingTasksList" class="task-list">
+      <!-- 任务项将通过JS动态生成 -->
+      <div class="no-tasks">暂无待接取任务</div>
+    </div>
+  </div>
+
+  <!-- 输入模式选择 -->
+  <div class="mode-selector">
+    <div class="mode-option">
+      <input type="radio" name="inputMode" id="jsonMode" checked>
+      <label for="jsonMode">JSON模式（论文对象数组）</label>
+    </div>
+    <div class="mode-option">
+      <input type="radio" name="inputMode" id="keywordMode">
+      <label for="keywordMode">关键词模式（作者：标题；多个用;分隔）</label>
+    </div>
+  </div>
+
+  <!-- 关键词/JSON输入区域 -->
+  <div class="form-group">
+    <label for="inputContent">输入内容：</label>
+    <textarea id="inputContent" placeholder="JSON模式：粘贴论文对象数组 | 关键词模式：例如 Sackstein, S.：Contract grading and peer review; Stommel, J.：How to ungrade">[
+  {
+    "id": null,
+    "title": "(Un)making the grade: An instructor's guide to mitigating the negative impacts of grades within a neoliberal university system",
+    "authors": "Brook, A.",
+    "doi": "",
+    "citations": 10
+  },
+  {
+    "id": null,
+    "title": "How to ungrade",
+    "authors": "Stommel, J.",
+    "doi": "",
+    "citations": 10
+  },
+  {
+    "id": null,
+    "title": "Do we need the word 'ungrading'?",
+    "authors": "Stommel, J.",
+    "doi": "",
+    "citations": 10
+  },
+  {
+    "id": null,
+    "title": "\"It made me feel like it was okay to be wrong\": Student experiences with ungrading",
+    "authors": "Gorichanaz, T.",
+    "doi": "",
+    "citations": 10
+  }
+]</textarea>
+    <div class="hint-text" id="inputHint">
+      JSON模式：请输入标准的论文对象数组，包含title、authors等字段
+    </div>
+  </div>
+
+  <div class="button-group">
+    <button id="startBtn" class="btn">🚀 启动谷歌检索</button>
+    <button id="taskBtn" class="btn">测试发送任务</button>
+    <button id="restartBtn" class="btn btn-restart">🔄 重启谷歌检索</button>
+    <button id="resetBtn" class="btn btn-reset">🗑️ 重置状态</button>
+    <button id="stopBtn" class="btn" style="background: #e74c3c;">⏹️ 停止检索</button>
+  </div>
+
+  <!-- 状态展示区域 -->
+  <div class="status-panel">
+    <div class="status-item">运行状态：<strong><span id="isRunning">未运行</span></strong></div>
+    <div class="status-item">进度：<span id="progressText">0%</span></div>
+    <div class="progress-bar">
+      <div id="progressBar" class="progress-fill" style="width: 0%;"></div>
+    </div>
+    <div class="status-item">错误信息：<span id="errorMsg" class="log-error"></span></div>
+  </div>
+
+  <!-- 日志展示区域 -->
+  <div class="logs-panel">
+    <label>📋 执行日志：</label>
+    <div id="logArea" class="log-area"></div>
+  </div>
+
+  <!-- 结果展示区域 -->
+  <div class="result-panel">
+    <h3>📊 检索结果统计</h3>
+    <div class="status-item">成功条数：<strong><span id="successCount">0</span></strong></div>
+    <div class="status-item">失败条数：<strong><span id="failedCount">0</span></strong></div>
+
+    <h3>📁 生成文件路径</h3>
+    <div class="status-item">成功结果Excel：<span id="successExcel" class="file-path">-</span></div>
+    <div class="status-item">失败结果Excel：<span id="failedExcel" class="file-path">-</span></div>
+    <div class="status-item">EndNote解析Excel：<span id="endnoteExcel" class="file-path">-</span></div>
+    <div class="status-item">EndNote文件目录：<span id="endnoteDir" class="file-path">-</span></div>
+
+    <h3>📄 成功结果预览（前10条）</h3>
+    <table>
+      <thead>
+      <tr>
+        <th>标题</th>
+        <th>作者</th>
+        <th>年份</th>
+        <th>引用数</th>
+      </tr>
+      </thead>
+      <tbody id="resultTable">
+      <tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  // 全局变量
+  let displayedLogIndex = 0;
+  let pollTimer = null;
+  let isPolling = false;
+  let stompClient = null;
+  let pendingTasks = []; // 存储待接取任务列表
+  let currentTask = null; // 存储当前正在处理的任务
+
+  // DOM元素获取
+  const inputContentEl = document.getElementById('inputContent');
+  const jsonModeEl = document.getElementById('jsonMode');
+  const keywordModeEl = document.getElementById('keywordMode');
+  const inputHintEl = document.getElementById('inputHint');
+  const startBtn = document.getElementById('startBtn');
+  const taskBtn = document.getElementById('taskBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const isRunningEl = document.getElementById('isRunning');
+  const progressTextEl = document.getElementById('progressText');
+  const progressBarEl = document.getElementById('progressBar');
+  const errorMsgEl = document.getElementById('errorMsg');
+  const logAreaEl = document.getElementById('logArea');
+  const successCountEl = document.getElementById('successCount');
+  const failedCountEl = document.getElementById('failedCount');
+  const successExcelEl = document.getElementById('successExcel');
+  const failedExcelEl = document.getElementById('failedExcel');
+  const endnoteExcelEl = document.getElementById('endnoteExcel');
+  const endnoteDirEl = document.getElementById('endnoteDir');
+  const resultTableEl = document.getElementById('resultTable');
+  const pendingTasksListEl = document.getElementById('pendingTasksList'); // 待接取任务列表容器
+
+  // 切换输入模式提示文本
+  jsonModeEl.addEventListener('change', () => {
+    inputHintEl.textContent = 'JSON模式：请输入标准的论文对象数组，包含title、authors等字段';
+    inputContentEl.placeholder = '[{ "title": "论文标题", "authors": "作者" }, ...]';
+  });
+
+  keywordModeEl.addEventListener('change', () => {
+    inputHintEl.textContent = '关键词模式：单个格式【作者：标题】，多个用分号;分隔，例如 Sackstein, S.：Contract grading and peer review; Stommel, J.：How to ungrade';
+    inputContentEl.placeholder = 'Sackstein, S.：Contract grading and peer review; Stommel, J.：How to ungrade';
+  });
+
+  // 工具函数
+  function getCurrentTime() {
+    const now = new Date();
+    return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+  }
+
+  function addLog(type, content) {
+    const logHtml = `<div class="log-${type}">[${getCurrentTime()}] ${content}</div>`;
+    logAreaEl.innerHTML += logHtml;
+    logAreaEl.scrollTop = logAreaEl.scrollHeight;
+  }
+
+  function updateLogs(newLogs) {
+    if (!newLogs || newLogs.length === 0) return;
+    if (newLogs.length > displayedLogIndex) {
+      const newLogItems = newLogs.slice(displayedLogIndex);
+      newLogItems.forEach(log => {
+        const logHtml = `<div class="log-${log.type || 'info'}">[${log.time}] ${log.content}</div>`;
+        logAreaEl.innerHTML += logHtml;
+      });
+      displayedLogIndex = newLogs.length;
+      logAreaEl.scrollTop = logAreaEl.scrollHeight;
+    }
+  }
+
+  function updateButtons(isRunning) {
+    startBtn.disabled = isRunning;
+    restartBtn.disabled = !isRunning;
+    stopBtn.disabled = !isRunning;
+    resetBtn.disabled = isRunning;
+    // 禁用所有接取任务按钮
+    const takeTaskBtns = document.querySelectorAll('.btn-take-task');
+    takeTaskBtns.forEach(btn => {
+      btn.disabled = isRunning;
+    });
+  }
+
+  function updateUI(data) {
+    const { isRunning, progress, logs, result, filePaths, error } = data;
+    if (logs) updateLogs(logs);
+    isRunningEl.textContent = isRunning ? '🟢 运行中' : '🔴 已停止';
+    progressTextEl.textContent = `${progress}%`;
+    progressBarEl.style.width = `${progress}%`;
+    updateButtons(isRunning);
+    errorMsgEl.textContent = error ? (error.message || JSON.stringify(error)) : '';
+
+    if (result) {
+      successCountEl.textContent = result.successCount || 0;
+      failedCountEl.textContent = result.failedCount || 0;
+      if (result.successList && result.successList.length > 0) {
+        const previewData = result.successList.slice(0, 10);
+        let tableHtml = '';
+        previewData.forEach(item => {
+          const citingCount = item.citingPapers ? item.citingPapers.length : 0;
+          tableHtml += `
+            <tr>
+                <td>${item.id || '-'}</td>
+                <td>${item.title || '-'}</td>
+                <td>${item.authors || '-'}</td>
+                <td>${item.year || '-'}</td>
+                <td>${item.citations || '-'}</td>
+                <td>${citingCount}</td>  <!-- 新增引用数 -->
+            </tr>
+        `;
+        });
+        resultTableEl.innerHTML = tableHtml;
+      } else {
+        resultTableEl.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>';
+      }
+    }
+
+    if (filePaths) {
+      successExcelEl.textContent = filePaths.successExcel || '-';
+      failedExcelEl.textContent = filePaths.failedExcel || '-';
+      endnoteExcelEl.textContent = filePaths.endnoteExcel || '-';
+      endnoteDirEl.textContent = filePaths.endnoteDir || '-';
+    }
+  }
+
+  // 格式化日期显示
+  function formatDate(dateString) {
+    if (!dateString) return '未设置';
+    const date = new Date(dateString);
+    return `${date.getFullYear()}-${(date.getMonth()+1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+  }
+
+  // 渲染待接取任务列表
+  function renderPendingTasks() {
+    if (pendingTasks.length === 0) {
+      pendingTasksListEl.innerHTML = '<div class="no-tasks">暂无待接取任务</div>';
+      return;
+    }
+
+    let tasksHtml = '';
+    pendingTasks.forEach(task => {
+      tasksHtml += `
+        <div class="task-item" data-task-id="${task.id}">
+          <div class="task-info">
+            <p><span>任务ID：</span>${task.id}</p>
+            <p><span>任务类型：</span>${task.type || '未知'}</p>
+            <p><span>任务状态：</span><span>${task.status}</span> ${task.status === '0' ? '待处理' : '已分配'}</p>
+            <p><span>创建时间：</span>${formatDate(task.createDate)}</p>
+            <p><span>分配终端ID：</span>${task.terminalID || '未分配'}</p>
+            <p><span>分配时间：</span>${formatDate(task.assignDate)}</p>
+          </div>
+          <div class="task-actions">
+            <button class="btn btn-take-task" onclick="takeTask(${task.id})" ${isRunningEl.textContent.includes('运行中') ? 'disabled' : ''}>接取任务</button>
+          </div>
+        </div>
+      `;
+    });
+
+    pendingTasksListEl.innerHTML = tasksHtml;
+  }
+
+  // 彻底解决引号闭合问题的JSON修复函数
+  function fixJsonQuotesAndSyntax(rawJson) {
+    if (!rawJson) return null;
+
+    // 清理多余空格和换行，统一为单个空格
+    let fixed = rawJson.replace(/\s+/g, ' ').trim();
+
+    // 匹配并修复每个字段
+    // 先按 },{ 分割成单个对象，避免跨对象匹配
+    const objects = fixed.replace(/^\[|\]$/g, '').split('},{');
+    const fixedObjects = [];
+
+    objects.forEach(obj => {
+      // 清理单个对象的前后括号
+      obj = obj.replace(/^\{|\}$/g, '').trim();
+      if (!obj) return;
+
+      // 分割字段（处理逗号分隔）
+      const fields = obj.split(',');
+      const fixedFields = [];
+
+      fields.forEach(field => {
+        field = field.trim();
+        if (!field) return;
+
+        // 匹配 字段名: 值 格式
+        const fieldMatch = field.match(/^([a-zA-Z0-9_]+):(.*)$/);
+        if (!fieldMatch) {
+          fixedFields.push(field);
+          return;
+        }
+
+        const [_, key, value] = fieldMatch;
+        const trimmedValue = value.trim();
+
+        // 处理不同字段的修复逻辑
+        switch (key) {
+          case 'id':
+            // id字段：null值直接处理
+            fixedFields.push(`"${key}": ${trimmedValue === 'null' ? 'null' : 'null'}`);
+            break;
+
+          case 'title':
+          case 'authors':
+            // 字符串字段：移除现有引号，添加正确的闭合引号
+            let cleanValue = trimmedValue
+                    .replace(/^["']|["']$/g, '') // 移除首尾的引号
+                    .replace(/"/g, '\\"') // 转义内部双引号
+                    .replace(/'/g, "\\'"); // 转义内部单引号
+
+            // 添加闭合双引号
+            fixedFields.push(`"${key}": "${cleanValue}"`);
+            break;
+
+          case 'doi':
+            // doi字段：空值处理为空字符串
+            fixedFields.push(`"${key}": "${trimmedValue || ''}"`);
+            break;
+
+          case 'citations':
+            // 数字字段：确保是数字格式
+            fixedFields.push(`"${key}": ${isNaN(trimmedValue) ? 0 : parseInt(trimmedValue)}`);
+            break;
+
+          default:
+            // 其他字段默认处理
+            fixedFields.push(`"${key}": ${trimmedValue === 'null' ? 'null' : `"${trimmedValue}"`}`);
+            break;
+        }
+      });
+
+      // 重组单个对象
+      fixedObjects.push(`{${fixedFields.join(', ')}}`);
+    });
+
+    // 重组为数组
+    const finalJson = `[${fixedObjects.join(', ')}]`;
+    console.log('最终修复后的JSON:', finalJson);
+
+    return finalJson;
+  }
+
+  // 安全解析JSON（终极版）
+  function safeParseJsonWithFix(rawData) {
+    try {
+      // 尝试直接解析
+      return JSON.parse(rawData);
+    } catch (e1) {
+      console.log('直接解析失败，错误:', e1.message);
+
+      // 第一次修复后解析
+      const fixedOnce = fixJsonQuotesAndSyntax(rawData);
+      try {
+        return JSON.parse(fixedOnce);
+      } catch (e2) {
+        console.log('第一次修复后仍失败，错误:', e2.message);
+
+        // 终极方案：手动构建对象
+        return buildPapersObjectManually(rawData);
+      }
+    }
+  }
+
+  // 手动构建论文对象（完全不依赖JSON解析）
+  function buildPapersObjectManually(rawText) {
+    const papers = [];
+    const rawObjects = rawText.replace(/^\[|\]$/g, '').split('},{');
+
+    rawObjects.forEach(objText => {
+      const paper = {
+        id: null,
+        title: '',
+        authors: '',
+        doi: '',
+        citations: 0
+      };
+
+      // 提取title
+      const titleMatch = objText.match(/title:\s*([^,]+)/);
+      if (titleMatch) {
+        paper.title = titleMatch[1].trim().replace(/["']/g, '');
+      }
+
+      // 提取authors
+      const authorsMatch = objText.match(/authors:\s*([^,]+)/);
+      if (authorsMatch) {
+        paper.authors = authorsMatch[1].trim().replace(/["']/g, '');
+      }
+
+      // 提取citations
+      const citationsMatch = objText.match(/citations:\s*(\d+)/);
+      if (citationsMatch) {
+        paper.citations = parseInt(citationsMatch[1]);
+      }
+
+      papers.push(paper);
+    });
+
+    return papers;
+  }
+
+  // 启动检索的通用函数
+  async function startCrawlWithData(papersData, source = '手动输入') {
+    try {
+      displayedLogIndex = 0;
+      logAreaEl.innerHTML = '';
+      errorMsgEl.textContent = '';
+      updateButtons(true);
+
+      const paperCount = Array.isArray(papersData) ? papersData.length : 0;
+      addLog('info', `【${source}】正在启动检索，共${paperCount}篇论文`);
+
+      // 构建请求参数，增加 taskType
+      const requestBody = {
+        keywords: papersData
+      };
+      if (currentTask) {
+        requestBody.taskType = currentTask.type;  // 传递任务类型
+      }
+      console.log("测试任务发送"+requestBody.keywords)
+      console.log("测试任务发送"+currentTask)
+      console.log("测试任务发送"+requestBody.taskType)
+      const res = await apiRequest('/api/google/crawl/start', 'POST', requestBody);
+
+      addLog('success', `【${source}】检索任务启动成功：${res.msg || '操作成功'}`);
+      startPolling();
+
+      return true;
+    } catch (err) {
+      const errorMsg = err.message || '启动失败';
+      addLog('error', `【${source}】启动失败: ${errorMsg}`);
+      errorMsgEl.textContent = errorMsg;
+      updateButtons(false);
+
+      // 如果当前任务存在，发送失败状态
+      if (currentTask) {
+        const failedTask = {
+          id: currentTask.id,
+          type: currentTask.type,
+          status: "4", // 状态4表示失败
+          terminalID: currentTask.terminalID || "",
+          startDate: currentTask.startDate || new Date().toISOString(),
+          createDate: currentTask.createDate,
+          assocID: currentTask.assocID,
+          failure: errorMsg,
+          retryCount: currentTask.retryCount || 0,
+          requestData: currentTask.requestData
+        };
+        if (stompClient && stompClient.connected) {
+          stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(failedTask));
+          addLog('info', `已发送任务失败状态 [ID: ${currentTask.id}]`);
+        }
+        currentTask = null;
+      }
+
+      return false;
+    }
+  }
+
+  // 接取任务函数（接取任务，更新状态，启动检索）
+  async function takeTask(taskId) {
+    // 查找对应任务
+    const task = pendingTasks.find(t => t.id === taskId);
+    if (!task) {
+      addLog('error', `未找到ID为${taskId}的任务`);
+      alert(`未找到ID为${taskId}的任务`);
+      return;
+    }
+
+    try {
+      console.log('接取任务ID:', taskId);
+      console.log('原始RequestData:', task.requestData);
+
+      const papersData = safeParseJsonWithFix(task.requestData);
+
+      console.log('解析后的RequestData:', JSON.stringify(papersData, null, 2));
+
+      // 发送状态更新消息（处理中）
+      // const updatedTask = {
+      //   id: task.id,
+      //   type: task.type,
+      //   status: "2",                       // 状态2表示正在处理
+      //   terminalID: task.terminalID || "",
+      //   startDate: new Date().toISOString(), // 记录接取时间
+      //   createDate: task.createDate,
+      //   assocID: task.assocID,
+      //   failure: "",
+      //   retryCount: task.retryCount || 0,
+      //   requestData: task.requestData        // 保持原样
+      // };
+      // if (stompClient && stompClient.connected) {
+      //   stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(updatedTask));
+      //   addLog('info', `已发送任务状态更新 [ID: ${task.id}] -> 处理中`);
+      // } else {
+      //   addLog('warn', `WebSocket未连接，无法发送状态更新`);
+      // }
+
+      // 设置当前任务
+      currentTask = task;
+
+      // 启动检索
+
+      const startSuccess = await startCrawlWithData(papersData, `任务ID: ${taskId}`);
+
+      if (startSuccess) {
+        addLog('success', `成功接取并启动任务 [ID: ${taskId}]`);
+        alert(`成功接取任务 [ID: ${taskId}]，已启动检索任务！`);
+
+        // 从待接取列表中移除该任务
+        pendingTasks = pendingTasks.filter(t => t.id !== taskId);
+        renderPendingTasks();
+      }
+
+    } catch (e) {
+      addLog('error', `接取/启动任务失败 [ID: ${taskId}]：${e.message}`);
+      console.error('接取任务失败详情:', e);
+      alert(`接取任务失败：${e.message}\n\n`);
+      updateButtons(false);
+    }
+  }
+
+  // 处理输入内容（转换为统一的论文对象数组）
+  function processInputContent() {
+    const content = inputContentEl.value.trim();
+
+    // JSON模式
+    if (jsonModeEl.checked) {
+      try {
+        const papers = JSON.parse(content);
+        if (!Array.isArray(papers) || papers.length === 0) {
+          throw new Error('JSON必须是非空数组');
+        }
+        // 验证每个论文对象是否包含基本字段
+        papers.forEach((paper, index) => {
+          if (!paper.title) {
+            throw new Error(`第${index+1}个论文对象缺少title字段`);
+          }
+        });
+        addLog('info', `JSON模式：解析出${papers.length}篇论文`);
+        return papers;
+      } catch (e) {
+        throw new Error(`JSON解析错误：${e.message}`);
+      }
+    }
+    // 关键词模式
+    else {
+      if (!content) {
+        throw new Error('关键词不能为空');
+      }
+      // 按;分割多个关键词
+      const keywordItems = content.split(';').map(item => item.trim()).filter(item => item);
+      if (keywordItems.length === 0) {
+        throw new Error('未识别到有效关键词（请用;分隔多个关键词）');
+      }
+
+      const papers = [];
+      keywordItems.forEach((item, index) => {
+        // 按中文冒号分割作者和标题
+        const parts = item.split('：');
+        if (parts.length !== 2) {
+          throw new Error(`第${index+1}个关键词格式错误（正确格式：作者：标题）`);
+        }
+        const [authors, title] = parts.map(part => part.trim());
+        if (!authors || !title) {
+          throw new Error(`第${index+1}个关键词的作者或标题不能为空`);
+        }
+        papers.push({
+          id: null,
+          title: title,
+          authors: authors,
+          doi: "",
+          citations: 0
+        });
+      });
+      addLog('info', `关键词模式：解析出${papers.length}篇论文`);
+      return papers;
+    }
+  }
+
+  // API请求函数
+  async function apiRequest(url, method = 'GET', data = null) {
+    const options = {
+      method: method,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    };
+    if (data) {
+      options.body = JSON.stringify(data);
+    }
+    try {
+      const response = await fetch(url, options);
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.msg || `请求失败: ${response.status}`);
+      }
+      return result;
+    } catch (error) {
+      console.error(`API请求失败 ${url}:`, error);
+      throw error;
+    }
+  }
+
+  // 轮询状态
+  function startPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    isPolling = true;
+    pollTimer = setInterval(async () => {
+      try {
+        const res = await apiRequest('/api/google/crawl/status');
+        if (res.code === 200 && res.data) {
+          const prevIsRunning = isRunningEl.textContent.includes('运行中');
+          updateUI(res.data);
+          const currentIsRunning = res.data.isRunning;
+
+          // 检测到爬虫从运行变为停止
+          if (prevIsRunning && !currentIsRunning) {
+            if (currentTask) {
+              if (res.data.error) {
+                // 有错误，发送失败状态
+                const failedTask = {
+                  id: currentTask.id,
+                  type: currentTask.type,
+                  status: "4",                       // 状态4表示失败
+                  terminalID: currentTask.terminalID || "",
+                  startDate: currentTask.startDate || "",
+                  endDate: new Date().toISOString(),
+                  createDate: currentTask.createDate,
+                  assocID: currentTask.assocID,
+                  failure: res.data.error.message || JSON.stringify(res.data.error),
+                  retryCount: currentTask.retryCount || 0,
+                  requestData: currentTask.requestData
+                };
+                if (stompClient && stompClient.connected) {
+                  stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(failedTask));
+                  addLog('info', `已发送任务失败状态 [ID: ${currentTask.id}]`);
+                }
+              } else {
+                // 无错误，发送完成状态
+                const completedTask = {
+                  id: currentTask.id,
+                  type: currentTask.type,
+                  status: "3",
+                  terminalID: currentTask.terminalID || "",
+                  startDate: currentTask.startDate || "",
+                  endDate: new Date().toISOString(),
+                  createDate: currentTask.createDate,
+                  assocID: currentTask.assocID,
+                  failure: "",
+                  retryCount: currentTask.retryCount || 0,
+                  requestData: currentTask.requestData,
+                  resultData: JSON.stringify(res.data.result)   // 包含成功结果
+                };
+                console.log("测试任务完成数据："+completedTask.resultData)
+                console.log("测试任务完成数据："+completedTask.resultData)
+                stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(completedTask));
+                addLog('info', `已发送任务完成状态 [ID: ${currentTask.id}]`);
+              }
+              currentTask = null; // 清空当前任务
+            }
+          }
+        }
+      } catch (err) {
+        console.error('轮询状态失败:', err);
+        clearInterval(pollTimer);
+        pollTimer = null;
+        isPolling = false;
+        addLog('error', `连接后端失败: ${err.message}，请检查服务是否运行`);
+        errorMsgEl.textContent = `后端连接失败: ${err.message}`;
+        updateButtons(false);
+      }
+    }, 1000);
+  }
+
+  // 原启动按钮点击事件（调用通用启动函数）
+  startBtn.addEventListener('click', async () => {
+    try {
+      const papers = processInputContent();
+      await startCrawlWithData(papers, '手动输入');
+    } catch (err) {
+      const errorMsg = err.message || '启动失败';
+      addLog('error', `启动失败: ${errorMsg}`);
+      errorMsgEl.textContent = errorMsg;
+      updateButtons(false);
+    }
+  });
+
+  restartBtn.addEventListener('click', async () => {
+    if (!confirm('确定要重启检索任务吗？当前进度将丢失。')) {
+      return;
+    }
+
+    try {
+      const papers = processInputContent();
+      displayedLogIndex = 0;
+      logAreaEl.innerHTML = '';
+      errorMsgEl.textContent = '';
+      updateButtons(true);
+
+      addLog('warn', `正在重启检索，共${papers.length}篇论文`);
+      const res = await apiRequest('/api/google/crawl/restart', 'POST', { keywords: papers });
+      addLog('success', res.msg || '检索任务重启成功');
+      startPolling();
+    } catch (err) {
+      const errorMsg = err.message || '重启失败';
+      addLog('error', `重启失败: ${errorMsg}`);
+      errorMsgEl.textContent = errorMsg;
+      updateButtons(false);
+    }
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    if (!confirm('确定要停止当前检索任务吗？')) return;
+
+    // 保存当前任务并立即清空，防止轮询误发完成状态
+    const taskToStop = currentTask;
+    currentTask = null;
+
+    try {
+      addLog('warn', '正在停止检索任务...');
+      const res = await apiRequest('/api/google/crawl/stop', 'POST');
+      addLog('success', res.msg || '检索任务已停止');
+
+      // 发送失败状态（使用保存的任务）
+      if (taskToStop) {
+        const failedTask = {
+          id: taskToStop.id,
+          type: taskToStop.type,
+          status: "4",
+          terminalID: taskToStop.terminalID || "",
+          startDate: taskToStop.startDate || new Date().toISOString(),
+          createDate: taskToStop.createDate,
+          assocID: taskToStop.assocID,
+          failure: "用户手动停止任务",
+          retryCount: taskToStop.retryCount || 0,
+          requestData: taskToStop.requestData
+        };
+        if (stompClient && stompClient.connected) {
+          stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(failedTask));
+          addLog('info', `已发送任务失败状态 [ID: ${taskToStop.id}]`);
+        }
+      }
+    } catch (err) {
+      addLog('error', `停止失败: ${err.message}`);
+    }
+  });
+  resetBtn.addEventListener('click', async () => {
+    if (!confirm('确定要重置爬虫状态吗？所有数据将被清空。')) return;
+
+    try {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        isPolling = false;
+      }
+
+      const res = await apiRequest('/api/google/crawl/reset', 'POST');
+      displayedLogIndex = 0;
+      logAreaEl.innerHTML = '';
+      errorMsgEl.textContent = '';
+      progressBarEl.style.width = '0%';
+      progressTextEl.textContent = '0%';
+      isRunningEl.textContent = '未运行';
+      successCountEl.textContent = '0';
+      failedCountEl.textContent = '0';
+      successExcelEl.textContent = '-';
+      failedExcelEl.textContent = '-';
+      endnoteExcelEl.textContent = '-';
+      endnoteDirEl.textContent = '-';
+      resultTableEl.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>';
+      updateButtons(false);
+      currentTask = null; // 清空当前任务
+      addLog('success', res.msg || '状态已重置');
+    } catch (err) {
+      alert(`重置失败：${err.message}`);
+      console.error('重置请求失败：', err);
+    }
+  });
+
+  // Socket连接（保留原有逻辑）
+  function connect() {
+    const socket = new SockJS('http://localhost:8080/ws');
+    stompClient = Stomp.over(socket);
+    stompClient.connect({}, function (frame) {
+      console.log('已连接：' + frame);
+      stompClient.subscribe('/topic/messages', function (response) {
+        console.log(response.body);
+      });
+      stompClient.subscribe('/user/queue/heartbeat', function (message) {
+        if (message.body && message.body.startsWith('Heart:')) {
+          sendHeartbeatResponse();
+        }
+      });
+      stompClient.subscribe('/user/queue/task', function(message) {
+        console.log('收到任务消息：', message);
+        try {
+          const taskData = JSON.parse(message.body);
+          console.log('解析后的任务数据：', taskData);
+
+          // 将收到的任务添加到待接取列表
+          pendingTasks.push(taskData);
+          // 去重（避免重复任务）
+          pendingTasks = Array.from(new Map(pendingTasks.map(item => [item.id, item])).values());
+          // 重新渲染任务列表
+          renderPendingTasks();
+          // 添加日志
+          addLog('info', `收到新任务 [ID: ${taskData.id}]，已加入待接取列表`);
+
+        } catch (e) {
+          console.error('解析任务数据失败:', e);
+          addLog('error', `解析任务数据失败：${e.message}`);
+        }
+      });
+      stompClient.send('/app/Online', {}, JSON.stringify({}));
+    }, function(error) {
+      console.error('连接错误：' + error);
+    });
+  }
+
+  function sendHeartbeatResponse() {
+    if (stompClient && stompClient.connected) {
+      stompClient.send('/app/Heartbeat', {}, JSON.stringify({}));
+    }
+  }
+
+  // 测试任务
+  taskBtn.addEventListener('click', async () => {
+    sendMessage();
+    alert('测试任务已发送，请查看待接取任务列表');
+  });
+
+  function sendMessage() {
+    const papers = [
+      {
+        id: 1,
+        title: "(Un)making the grade: An instructor's guide to mitigating the negative impacts of grades within a neoliberal university system",
+        authors: "Brook, A.",
+        doi: "",
+        citations: 10
+      },
+      {
+        id: 2,
+        title: "Self-evaluation: The humanistic skill we need in a just society",
+        authors: "Katopodis, C.",
+        doi: "",
+        citations: 10
+      }
+    ];
+    const task = {
+      id: 20,
+      type: "GOOGLE_SCHOLAR_REFERENCE",
+      status: "0",
+      terminalID: "",
+      createDate: new Date().toISOString(),
+      assocID: null,
+      failure: "",
+      retryCount: 0,
+      requestData: JSON.stringify(papers)   // 生成标准 JSON 字符串
+    };
+    stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(task));
+  }
+
+  // 页面初始化
+  window.addEventListener('load', async () => {
+    try {
+      connect();
+      const res = await apiRequest('/api/google/crawl/status');
+      if (res.code === 200 && res.data) {
+        updateUI(res.data);
+        if (res.data.isRunning) {
+          startPolling();
+        }
+      }
+      renderPendingTasks();
+    } catch (err) {
+      errorMsgEl.textContent = '❌ 未连接到后端服务，请启动服务后刷新页面';
+      addLog('error', '无法连接到后端服务，请检查：');
+      addLog('error', '1. 后端服务是否已启动');
+      addLog('error', '2. 端口是否正确（默认3000）');
+      addLog('error', `3. 错误详情: ${err.message}`);
+      console.error('初始化失败：', err);
+    }
+  });
+</script>
+</body>
+</html>

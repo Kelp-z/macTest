@@ -1,0 +1,81 @@
+{
+  "name": "spmcrawler-server",
+  "version": "1.0.0",
+  "main": "main.js",
+  "bin": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "electron": "electron .",
+    "dist": "electron-builder"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "axios": "^1.13.6",
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "ejs": "^4.0.1",
+    "excel4node": "^1.8.2",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "glob": "^13.0.6",
+    "node-machine-id": "^1.1.12",
+    "playwright": "^1.35.0",
+    "readline-sync": "^1.4.10",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "sockjs": "^0.3.24",
+    "sockjs-client": "^1.6.1",
+    "stompjs": "^2.3.3",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "electron": "^41.0.2",
+    "electron-builder": "^26.8.1",
+    "nodemon": "^3.1.14"
+  },
+  "build": {
+    "appId": "com.spm.spmcrawler",
+    "productName": "SPM Crawler",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "files": [
+      "main.js",
+      "server.js",
+      "google-scholar-crawler.js",
+      "scopus-crawler.js",
+      "wos-crawler.js",
+      "public/**/*",
+      "**/*.js",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "browsers",
+        "to": "browsers",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/playwright",
+        "to": "playwright",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
+  }
+}

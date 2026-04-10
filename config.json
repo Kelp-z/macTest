@@ -1,0 +1,39 @@
+
+{
+  "LOG_BASE_DIR": "output/log",
+  "googleScholar": {
+    "PRECISE_SEARCH_ENABLED": true,
+    "TITLE_SIMILARITY_THRESHOLD": 0.8,
+    "VISIT_CITATION_ENABLED": true,
+    "MAX_CITATION_PAGES": 2,
+    "OUTPUT_BASE_DIR_NAME": "output/google"
+  },
+  "googleScholarAuthor": {
+    "OUTPUT_BASE_DIR_NAME": "output/google_authors"
+  },
+  "scopus": {
+    "USER_NAME": "28199134",
+    "PASSWORD": "460256",
+    "BASE_URL": "https://www.2447.net/",
+    "OUTPUT_DIR_NAME": "output/scopus",
+    "CAPTCHA_DIR_NAME": "captcha_temp",
+    "SCREENSHOT_DIR_NAME": "screenshots"
+  },
+  "scopusAuthor": {
+    "OUTPUT_BASE_DIR_NAME": "output/scopus_authors"
+  },
+  "wos": {
+    "USER_NAME": "28199134",
+    "PASSWORD": "460256",
+    "BASE_URL": "https://www.2447.net/",
+    "OUTPUT_DIR_NAME": "output/wos",
+    "CAPTCHA_DIR_NAME": "captcha_temp",
+    "SCREENSHOT_DIR_NAME": "screenshots"
+  },
+  "wosAuthor": {
+    "OUTPUT_BASE_DIR_NAME": "output/wos_authors",
+    "credentials": {
+
+    }
+  }
+}

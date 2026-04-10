@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 系统</title>
+    <link rel="stylesheet" href="//at.alicdn.com/t/c/font_5156405_mdvvudg2xij.css" >
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        /*.login {*/
+        /*    display: flex;*/
+        /*    justify-content: center;*/
+        /*    align-items: center;*/
+        /*    height: 100%;*/
+        /*    backdrop-filter: blur(4px);*/
+        /*}*/
+        .login {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+            background-image: url('https://picsum.photos/id/104/1920/1080');
+            background-size: cover;
+            background-position: center;
+        }
+        .login-form {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 32px;
+            width: 460px;
+            padding: 40px 36px 36px;
+            box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.02);
+            transition: transform 0.2s ease;
+        }
+
+        .title {
+            text-align: center;
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 32px;
+            background: linear-gradient(120deg, #1e293b, #2d3e5f);
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+            letter-spacing: -0.3px;
+        }
+
+        .form-item {
+            margin-bottom: 24px;
+        }
+
+        .el-input {
+            position: relative;
+            width: 100%;
+        }
+
+        .el-input input {
+            width: 100%;
+            height: 48px;
+            padding-left: 44px;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 16px;
+            font-size: 15px;
+            background: #ffffff;
+            transition: all 0.2s;
+            outline: none;
+            color: #1e293b;
+        }
+
+        .el-input input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .el-input input::placeholder {
+            color: #94a3b8;
+            font-weight: 400;
+        }
+
+
+        .input-icon {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 20px;
+            color: #94a3b8;
+            z-index: 1;
+            pointer-events: none; /* 让图标不干扰输入框点击 */
+        }
+        .password-toggle{
+            position:absolute;
+            right:16px;
+            top:50%;
+            transform:translateY(-50%);
+            cursor: pointer;
+            user-select: none;
+            font-size:18px;
+            color:#94a3b8;
+            transition: color 0.2s;
+            z-index:1;
+        }
+        .password-toggle:hover{
+            color:#3b82f6;
+        }
+        /* 验证码行 */
+        .captcha-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .captcha-input {
+            flex: 1;
+        }
+        /* 验证码输入框样式 */
+        .captcha-input input {
+            width: 100%;
+            height: 48px;           /* 与验证码保持一致 */
+            padding: 0 16px;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 16px;
+            font-size: 15px;
+            background: #ffffff;
+            transition: all 0.2s;
+            outline: none;
+            color: #1e293b;
+        }
+
+        .captcha-input input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .captcha-input input::placeholder {
+            color: #94a3b8;
+            font-weight: 400;
+        }
+        .login-code {
+            width: 110px;
+            height: 48px;
+            border-radius: 16px;
+            overflow: hidden;
+            background: #f1f5f9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .login-code-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .login-code:hover {
+            opacity: 0.85;
+        }
+
+        /* 复选框 */
+        .checkbox {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 20px 0 28px;
+        }
+
+        .checkbox input {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #667eea;
+        }
+
+        .checkbox label {
+            font-size: 14px;
+            color: #475569;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        /* 登录按钮 */
+        .login-btn {
+            width: 100%;
+            height: 52px;
+            background: linear-gradient(105deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 28px;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 8px 16px -6px rgba(102, 126, 234, 0.4);
+        }
+
+        .login-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 20px -8px rgba(102, 126, 234, 0.5);
+        }
+
+        .login-btn:active {
+            transform: translateY(1px);
+        }
+
+        .login-btn:disabled {
+            background: #cbd5e1;
+            box-shadow: none;
+            transform: none;
+            cursor: not-allowed;
+        }
+
+        /* 底部版权 */
+        .el-login-footer {
+            position: fixed;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 13px;
+            letter-spacing: 0.5px;
+            padding: 12px;
+            background: transparent;
+            backdrop-filter: blur(2px);
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        /* 响应式 */
+        @media (max-width: 520px) {
+            .login-form {
+                width: calc(100% - 32px);
+                padding: 32px 24px;
+                margin: 0 16px;
+            }
+            .title {
+                font-size: 24px;
+            }
+            .el-input input, .login-code, .login-btn {
+                height: 44px;
+            }
+            .login-code {
+                width: 100px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="login">
+    <div class="login-form">
+        <h3 class="title" id="appTitle">系统登录</h3>
+        <div class="form-item">
+            <div class="el-input">
+                <span class="input-icon iconfont icon-renwu-ren" ></span>
+                <input type="text" id="username" placeholder="请输入SPM系统账号" autocomplete="off">
+            </div>
+        </div>
+        <div class="form-item">
+            <div class="el-input">
+                <span class="input-icon iconfont icon-suo"></span>
+                <input type="password" id="password" placeholder="请输入密码" autocomplete="off">
+                <span class="password-toggle iconfont icon-yanjing_xianshi" id="togglePassword"></span>
+            </div>
+        </div>
+        <div class="form-item" id="captchaGroup">
+            <div class="captcha-row">
+                <div class="captcha-input">
+                    <input type="text" id="code" placeholder="验证码" autocomplete="off" style="width:100%;">
+                </div>
+                <div class="login-code">
+                    <img id="captchaImg" class="login-code-img" alt="验证码" style="cursor:pointer;">
+                </div>
+            </div>
+        </div>
+        <div class="checkbox">
+            <input type="checkbox" id="rememberMe">
+            <label for="rememberMe">记住密码</label>
+        </div>
+        <button id="loginBtn" class="login-btn">登 录</button>
+    </div>
+    <div class="el-login-footer">
+        <span id="footerText">© 2025 系统管理</span>
+    </div>
+</div>
+
+<script>
+    //  配置
+    const API = {
+        captcha: 'http://localhost:8080/captchaImage',
+        login: 'http://localhost:8080/login'
+    };
+
+    // 简单编码（仅用于演示记住密码，非安全加密）
+    function simpleEncode(str) { return btoa(encodeURIComponent(str)); }
+    function simpleDecode(str) { return decodeURIComponent(atob(str)); }
+
+    // 原生 Cookie 操作
+    function setCookie(name, value, days) {
+        let expires = '';
+        if (days) {
+            const date = new Date();
+            date.setTime(date.getTime() + days * 24 * 60 * 60 * 1000);
+            expires = '; expires=' + date.toUTCString();
+        }
+        document.cookie = name + '=' + (value || '') + expires + '; path=/';
+    }
+    function getCookie(name) {
+        const nameEQ = name + '=';
+        const ca = document.cookie.split(';');
+        for (let i = 0; i < ca.length; i++) {
+            let c = ca[i];
+            while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+            if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+        }
+        return null;
+    }
+    function removeCookie(name) {
+        document.cookie = name + '=; Max-Age=-99999999; path=/';
+    }
+
+    // DOM 元素
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+    const codeInput = document.getElementById('code');
+    const captchaGroup = document.getElementById('captchaGroup');
+    const captchaImg = document.getElementById('captchaImg');
+    const rememberMeCheck = document.getElementById('rememberMe');
+    const loginBtn = document.getElementById('loginBtn');
+    const footerSpan = document.getElementById('footerText');
+    const togglePassword = document.getElementById('togglePassword');
+
+
+    if(togglePassword && passwordInput){
+        togglePassword.addEventListener('click',function (){
+            const type = passwordInput.getAttribute('type')=== 'password'?'text':'password';
+            passwordInput.setAttribute('type',type);
+            if(type === 'password'){
+                this.classList.remove('icon-yanjing_xianshi')
+                this.classList.add('icon-yanjing_yincang')
+            }else{
+                this.classList.remove('icon-yanjing_yincang')
+                this.classList.add('icon-yanjing_xianshi')
+
+            }
+        })
+    }
+
+    let captchaEnabled = true;
+    let currentUuid = '';
+    let loading = false;
+
+    // 获取验证码
+    async function getCode() {
+        try {
+            const response = await fetch(API.captcha, {
+                method: 'GET',
+                credentials: 'include'
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const res = await response.json();
+            if (res.code === 200) {
+                captchaEnabled = res.captchaEnabled === undefined ? true : res.captchaEnabled;
+                if (captchaEnabled) {
+                    captchaImg.src = 'data:image/gif;base64,' + res.img;
+                    currentUuid = res.uuid;
+                    captchaGroup.classList.remove('hidden');
+                } else {
+                    captchaGroup.classList.add('hidden');
+                }
+            } else {
+                console.error('获取验证码失败:', res.msg);
+                captchaGroup.classList.remove('hidden');
+            }
+        } catch (error) {
+            console.error('请求验证码异常:', error);
+            captchaGroup.classList.remove('hidden');
+        }
+    }
+
+
+    // 加载记住的账号密码
+    function loadRemembered() {
+        const username = getCookie('username');
+        const encodedPwd = getCookie('password');
+        const remember = getCookie('rememberMe');
+        if (username) usernameInput.value = username;
+        if (encodedPwd && remember === 'true') {
+            try {
+                passwordInput.value = simpleDecode(encodedPwd);
+            } catch(e) { passwordInput.value = ''; }
+            rememberMeCheck.checked = true;
+        } else {
+            rememberMeCheck.checked = false;
+        }
+    }
+
+    // 保存记住密码
+    function saveRememberMe() {
+        const remember = rememberMeCheck.checked;
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value;
+        if (remember && username && password) {
+            setCookie('username', username, 30);
+            setCookie('password', simpleEncode(password), 30);
+            setCookie('rememberMe', 'true', 30);
+        } else {
+            removeCookie('username');
+            removeCookie('password');
+            removeCookie('rememberMe');
+        }
+    }
+
+    // 表单校验
+    function validateForm() {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value;
+        if (!username) { alert('请输入账号'); return false; }
+        if (!password) { alert('请输入密码'); return false; }
+        if (captchaEnabled) {
+            const code = codeInput.value.trim();
+            if (!code) { alert('请输入验证码'); return false; }
+        }
+        return true;
+    }
+
+    // 登录
+    async function handleLogin() {
+        if (loading) return;
+        if (!validateForm()) return;
+
+        loading = true;
+        loginBtn.disabled = true;
+        loginBtn.innerText = '登 录 中...';
+
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value;
+        const code = captchaEnabled ? codeInput.value.trim() : '';
+        const uuid = captchaEnabled ? currentUuid : '';
+
+        const loginData = {
+            username, password, code, uuid,
+            rememberMe: rememberMeCheck.checked
+        };
+
+        try {
+            const response = await fetch(API.login, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(loginData)
+            });
+            const res = await response.json();
+            if (res.code === 200) {
+                saveRememberMe();
+                if (res.token) localStorage.setItem('token', res.token);
+                const urlParams = new URLSearchParams(window.location.search);
+                let redirect = urlParams.get('redirect');
+                if (!redirect || redirect === '/index') redirect = '/index';
+                window.location.href = redirect;
+            } else {
+
+                alert(res.msg || '登录失败，请检查账号或密码');
+                if (captchaEnabled) {
+                    await getCode();
+                    codeInput.value = '';
+                }
+            }
+        } catch (error) {
+            console.error('登录请求异常:', error);
+            alert(error.message || '网络错误，请稍后重试');
+            if (captchaEnabled) {
+                await getCode();
+                codeInput.value = '';
+            }
+        } finally {
+            loading = false;
+            loginBtn.disabled = false;
+            loginBtn.innerText = '登 录';
+        }
+    }
+
+    // 初始化
+    function init() {
+        footerSpan.innerText = '© 2025 系统管理 | 技术支持';
+        getCode();
+        loadRemembered();
+
+        captchaImg.addEventListener('click', getCode);
+        loginBtn.addEventListener('click', handleLogin);
+        [usernameInput, passwordInput, codeInput].forEach(input => {
+            if (input) input.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+        });
+    }
+
+    // 覆盖原生弹窗，使用 Electron 原生对话框（避免输入框失焦）
+    if (window.electronAPI) {
+        const originalAlert = window.alert;
+        const originalConfirm = window.confirm;
+        const originalPrompt = window.prompt;
+
+        window.alert = async (message) => {
+            await window.electronAPI.showMessageBox({
+                type: 'info',
+                title: '提示',
+                message: String(message),
+                buttons: ['确定']
+            });
+        };
+
+        window.confirm = async (message) => {
+            return await window.electronAPI.showConfirmBox({
+                type: 'question',
+                title: '确认',
+                message: String(message)
+            });
+        };
+
+        window.prompt = async (message, defaultValue) => {
+            const result = await window.electronAPI.showPromptBox({
+                title: '输入',
+                message: String(message),
+                defaultValue: defaultValue || '',
+                placeholder: '请输入'
+            });
+            return result; // 返回输入值或 null
+        };
+    } else {
+        // 非 Electron 环境保持原生
+        console.warn('非 Electron 环境，弹窗将使用原生方法');
+    }
+
+    init();
+</script>
+</body>
+</html>

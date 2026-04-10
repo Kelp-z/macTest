@@ -1,0 +1,69 @@
+{
+  "version": "1.0.0",
+  "output": {
+    "baseDir": "./output",
+    "subDirs": {
+      "screenshots": "screenshots",
+      "endnoteDownloads": "endnote_downloads",
+      "logs": "logs",
+      "data": "data"
+    },
+    "fileNames": {
+      "successExcel": "成功检索数据",
+      "failedExcel": "检索失败数据",
+      "endnoteExcel": "精确检索数据EndNote数据解析表格"
+    },
+    "useTimestamp": true,
+    "timestampFormat": "YYYYMMDD_HHmmss"
+  },
+  "search": {
+    "preciseSearchEnabled": true,
+    "titleSimilarityThreshold": 0.8,
+    "maxResults": 10,
+    "delayBetweenSearches": {
+      "min": 3000,
+      "max": 7000
+    }
+  },
+  "browser": {
+    "localBrowserDir": "browsers",
+    "autoDownloadIfMissing": true,
+    "headless": false,
+    "viewport": {
+      "width": 1920,
+      "height": 1080
+    },
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  },
+  "testData": [
+    {
+      "title": "Deep Learning",
+      "authors": "Brook, A."
+    },
+    {
+      "title": "Redos and retakes done right",
+      "authors": "Wormeli, R."
+    },
+    {
+      "title": "Contract grading and peer review",
+      "authors": "Katopodis, C., & Davidson, C. N."
+    }
+  ],
+  "dataSource": {
+    "type": "excel",
+    "filePath": "./input/data.xlsx",
+    "sheetName": "Papers",
+    "columns": {
+      "title": "Title",
+      "authors": "Authors",
+      "year": "Year",
+      "journal": "Journal"
+    }
+  },
+  "debug": {
+    "enableLogging": true,
+    "logLevel": "info",
+    "saveScreenshots": true,
+    "saveErrorLogs": true
+  }
+}
