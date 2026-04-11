@@ -111,15 +111,33 @@ function ensureDir(dirPath) {
 
 // 查找本地浏览器文件（复用谷歌爬虫逻辑）
 function findLocalBrowser() {
-    function findBrowserRecursive(dir) {
+    // 导入工具函数
+    const { isMacOSApp, getMacOSAppExecutable } = require('./crawler-utils');
+
+    function findBrowserRecursive(dir, depth = 0) {
         try {
             const items = fs.readdirSync(dir, { withFileTypes: true });
             for (const item of items) {
                 const fullPath = path.join(dir, item.name);
-                if (item.isDirectory()) {
-                    const found = findBrowserRecursive(fullPath);
-                    if (found) return found;
+                
+                // 如果是 .app 文件（macOS），获取其中的可执行文件
+                if (item.isDirectory() && item.name.toLowerCase().endsWith('.app')) {
+                    if (isMacOSApp(fullPath)) {
+                        const executable = getMacOSAppExecutable(fullPath);
+                        if (executable) {
+                            return executable;
+                        }
+                    }
+                    // ⚠️ 重要：不要递归进入 .app 内部，避免找到 Helper 进程
+                    continue;
+                } else if (item.isDirectory()) {
+                    // 普通目录，递归查找（限制深度）
+                    if (depth < 10) {
+                        const found = findBrowserRecursive(fullPath, depth + 1);
+                        if (found) return found;
+                    }
                 } else if (item.name.toLowerCase() === 'chrome.exe') {
+                    // Windows 浏览器
                     return fullPath;
                 }
             }

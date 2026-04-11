@@ -76,8 +76,8 @@ function createWindow() {
     });
     const url = `http://localhost:3000/?token=${ELECTRON_TOKEN}`
     mainWindow.loadURL(url);
-    mainWindow.webContents.openDevTools(); // 控制台
-    debugger;
+    // mainWindow.webContents.openDevTools(); // 控制台
+    // debugger;
     // 监听窗口关闭
     mainWindow.on('close', (e) => {
         e.preventDefault(); // 阻止默认关闭

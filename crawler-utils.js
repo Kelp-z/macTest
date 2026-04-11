@@ -140,20 +140,39 @@ function ensureDir(dirPath) {
 function findLocalBrowser(log = console.log) {
     log('\n=== 开始查找本地浏览器 ===');
 
-    function findBrowserRecursive(dir) {
+    function findBrowserRecursive(dir, depth = 0) {
         try {
             const items = fs.readdirSync(dir, {withFileTypes: true});
             for (const item of items) {
                 const fullPath = path.join(dir, item.name);
-                if (item.isDirectory()) {
-                    const found = findBrowserRecursive(fullPath);
-                    if (found) return found;
+                
+                // 如果是 .app 文件（macOS），获取其中的可执行文件
+                if (item.isDirectory() && item.name.toLowerCase().endsWith('.app')) {
+                    if (isMacOSApp(fullPath)) {
+                        const executable = getMacOSAppExecutable(fullPath);
+                        if (executable) {
+                            log(`✓ 找到 macOS 应用包并提取可执行文件: ${fullPath}`);
+                            log(`  可执行文件路径: ${executable}`);
+                            return executable;
+                        }
+                    }
+                    // ⚠️ 重要：不要递归进入 .app 内部，避免找到 Helper 进程
+                    // 如果上面的 getMacOSAppExecutable 失败，说明这个 .app 无效，跳过它
+                    continue;
+                } else if (item.isDirectory()) {
+                    // 普通目录，递归查找（但限制深度，避免过深）
+                    if (depth < 10) {
+                        const found = findBrowserRecursive(fullPath, depth + 1);
+                        if (found) return found;
+                    }
                 } else if (item.name.toLowerCase() === 'chrome.exe') {
+                    // Windows 浏览器
                     log(`✓ 找到浏览器（递归查找）: ${fullPath}`);
                     return fullPath;
                 }
             }
         } catch (error) {
+            log(`查找浏览器时出错: ${error.message}`);
         }
         return null;
     }
@@ -282,6 +301,128 @@ async function takeErrorScreenshot(page, context = 'unknown') {
     }
 }
 
+/**
+ * 判断一个路径是否是 macOS 的 .app 应用包
+ * @param {string} filePath - 文件路径
+ * @returns {boolean}
+ */
+function isMacOSApp(filePath) {
+    try {
+        // 1. 检查是否以 .app 结尾
+        if (!filePath.toLowerCase().endsWith('.app')) {
+            return false;
+        }
+        
+        // 2. 检查是否是目录（.app 实际上是目录）
+        const stats = fs.statSync(filePath);
+        if (!stats.isDirectory()) {
+            return false;
+        }
+        
+        // 3. 检查是否包含 Contents 目录（macOS .app 包的标志）
+        const contentsPath = path.join(filePath, 'Contents');
+        return fs.existsSync(contentsPath);
+        
+    } catch (error) {
+        console.error(`检查 .app 文件失败: ${error.message}`);
+        return false;
+    }
+}
+
+/**
+ * 严格验证 macOS .app 应用包
+ * @param {string} appPath - .app 路径
+ * @returns {object} 验证结果 { isValid: boolean, reasons: string[] }
+ */
+function validateMacOSApp(appPath) {
+    const result = {
+        isValid: false,
+        reasons: []
+    };
+    
+    try {
+        // 检查扩展名
+        if (!appPath.toLowerCase().endsWith('.app')) {
+            result.reasons.push('文件扩展名不是 .app');
+            return result;
+        }
+        
+        // 检查是否为目录
+        const stats = fs.statSync(appPath);
+        if (!stats.isDirectory()) {
+            result.reasons.push('.app 必须是目录类型');
+            return result;
+        }
+        
+        // 检查必需的结构
+        const requiredPaths = [
+            'Contents',
+            'Contents/Info.plist',
+            'Contents/MacOS'
+        ];
+        
+        for (const relativePath of requiredPaths) {
+            const fullPath = path.join(appPath, relativePath);
+            if (!fs.existsSync(fullPath)) {
+                result.reasons.push(`缺少必需的路径: ${relativePath}`);
+                return result;
+            }
+        }
+        
+        result.isValid = true;
+        
+    } catch (error) {
+        result.reasons.push(`检查失败: ${error.message}`);
+    }
+    
+    return result;
+}
+
+/**
+ * 获取 .app 包中的可执行文件路径
+ * @param {string} appPath - .app 路径
+ * @returns {string|null} 可执行文件路径或 null
+ */
+function getMacOSAppExecutable(appPath) {
+    if (!isMacOSApp(appPath)) {
+        return null;
+    }
+    
+    try {
+        const macosDir = path.join(appPath, 'Contents', 'MacOS');
+        if (!fs.existsSync(macosDir)) {
+            return null;
+        }
+        
+        const files = fs.readdirSync(macosDir);
+        
+        // 获取 .app 包的名称（不含 .app 后缀）
+        const appName = path.basename(appPath, '.app');
+        
+        // 优先查找与 .app 包名匹配的可执行文件
+        for (const file of files) {
+            const fullPath = path.join(macosDir, file);
+            const stats = fs.statSync(fullPath);
+            if (stats.isFile() && file === appName) {
+                return fullPath;
+            }
+        }
+        
+        // 如果没有找到完全匹配的，返回第一个可执行文件
+        for (const file of files) {
+            const fullPath = path.join(macosDir, file);
+            const stats = fs.statSync(fullPath);
+            if (stats.isFile()) {
+                return fullPath;
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        console.error(`获取 .app 可执行文件失败: ${error.message}`);
+        return null;
+    }
+}
 
 module.exports = {
     pendingInterventions,
@@ -294,8 +435,22 @@ module.exports = {
     calculateStringSimilarity,
     calculateMatchSimilarity,
     ensureDir,
+    findLocalBrowser,
     ensureBrowser,
     cleanupAllChromiumData,
     takeErrorScreenshot,
-    requestUserIntervention
+    requestUserIntervention,
+    isMacOSApp,
+    validateMacOSApp,
+    getMacOSAppExecutable
 };
+
+
+
+
+
+
+
+
+
+
