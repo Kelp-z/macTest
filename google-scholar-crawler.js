@@ -1619,6 +1619,8 @@ function cleanupAllChromiumData() {
 async function setupBrowserEnvironment() {
     // cleanupAllChromiumData();
 
+    debugger
+    
     const browserPath = await ensureBrowser();
     if (!browserPath) {
         throw new Error('未找到/下载浏览器，无法继续');
