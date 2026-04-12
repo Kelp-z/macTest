@@ -883,9 +883,9 @@ async function crawlWosAuthors(authors, options = {}) {
         // 使用工具类格式化错误
         const formattedError = formatError(error, 'wos-author');
         crawlerState.error = formattedError;
-        // 将原始详细信息写入日志
-        addLog('error', formattedError.detail);
-        addLog('info', `用户提示：${formattedError.userMessage}`);
+        // 将原始详细信息写入日志(详细调试展示细节信息)
+        addLog('info', formattedError.detail);
+        addLog('error', `用户提示：${formattedError.userMessage}`);
         // 抛出自定义错误
         throw formattedError;
     } finally {

@@ -96,7 +96,7 @@ function createWindow() {
                 // 设置超时，防止前端无响应
                 const timeout = setTimeout(() => {
                     forceQuit();
-                }, 2000); // 2秒超时
+                }, 500); // 0.5秒超时
 
                 // 等待前端确认
                 ipcMain.once('quit-confirmed', () => {

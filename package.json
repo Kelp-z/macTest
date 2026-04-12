@@ -7,7 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "electron": "electron .",
+    "electron": "chcp 65001 > nul && electron .",
     "dist": "electron-builder"
   },
   "keywords": [],
