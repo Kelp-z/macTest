@@ -628,22 +628,28 @@
             <div class="no-tasks">暂无待接取任务</div>
         </div>
     </div>
+    <label class="switch" >
+        <input type="checkbox" id="autoTakeSwitch">
+        <span class="slider"></span>
+    </label>
+    <span class="switch-label">自动接取任务</span>
     <div class="form-group" style="margin-top: 10px;">
         <!--        <label>-->
         <!--            <input type="checkbox" id="generateExcelCheckbox" checked> 📊 生成Excel文件-->
         <!--        </label>-->
+
         <label class="switch">
             <input type="checkbox" id="generateExcelCheckbox" checked>
             <span class="slider"></span>
         </label>
         <span class="switch-label">📊 生成Excel文件</span>
-        <!-- 在 .form-group 内，开关下方添加输出目录容器 -->
         <div id="outputDirContainer" class="output-dir-container">
             <label style="margin-left: 20px;">输出目录:
                 <input type="text" id="outputDirInput" placeholder="默认保存到桌面" style="width: 300px;">
                 <button type="button" id="selectDirBtn" class="btn" style="padding: 5px 10px;">选择目录</button>
             </label>
         </div>
+
     </div>
     <div id="manualTaskContainer" style="display: none;">
         <!-- 输入模式选择（手动启动） -->
@@ -817,6 +823,8 @@
     let currentErrorScreenshotUrl = null;  // 存储当前任务的错误截图 URL
     let allLogs = [];
     let currentFilter = 'hideInfo' //过滤模式
+    let autoTakeEnabled = false;
+    let isTakingTask = false;
 
     let electronToken = null;
 
@@ -831,6 +839,40 @@
 
     // 手动任务面板的隐藏/显示功能
     const manualContainer = document.getElementById('manualTaskContainer');
+
+    // 自动接取下一个任务（如果没有正在运行的任务）
+    async function checkAndTakeNextTask() {
+        // 未开启自动接取 或 已经有任务运行 或 正在接取中 则跳过
+        if (!autoTakeEnabled) return;
+        if (currentTask !== null) {
+
+            return;
+        }
+        if (isTakingTask) return;
+        if (pendingTasks.length === 0) return;
+
+        // 取第一个待接取任务
+        const nextTask = pendingTasks[0];
+        if (!nextTask) return;
+
+        addLog('info', `[自动接取] 尝试接取任务 ID: ${nextTask.id}`);
+        isTakingTask = true;
+        try {
+            // 直接调用全局 takeTask 函数
+            await takeTask(nextTask.id);
+        } catch (err) {
+            addLog('error', `[自动接取] 接取任务失败: ${err.message}`);
+            // 接取失败，从列表中移除该任务
+            pendingTasks = pendingTasks.filter(t => t.id !== nextTask.id);
+            renderPendingTasks();
+            // 继续尝试下一个
+            isTakingTask = false;
+            checkAndTakeNextTask();
+            return;
+        }
+        isTakingTask = false;
+
+    }
 
     function toggleManualPanel() {
         if (!manualContainer) return;
@@ -1937,6 +1979,8 @@
                         currentTask = null;
                         clearInterval(pollTimer);
                         pollTimer = null;
+
+                        checkAndTakeNextTask();
                     }
                 }
             } catch (err) {
@@ -2242,6 +2286,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             resultTableHead.innerHTML = '';
             resultTableBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>';
             updateButtons(false);
+
             addLog('success', '状态已重置');
         } catch (err) {
             alert(`重置失败：${err.message}`);
@@ -2401,12 +2446,25 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                                 ...pendingTasks.map(item => [item.id, item]),
                                 [taskData.id, taskData]
                             ]).values());
+                            // 解析任务并添加到pendingTasks
                             renderPendingTasks();
+                            // 自动接取
+                            checkAndTakeNextTask();
                         } catch (e) {
                             addLog('error', `解析任务数据失败：${e.message}`);
                         }
                     });
                     stompClient.send('/app/Online', {}, JSON.stringify({}));
+                    // 订阅终止任务队列
+                    stompClient.subscribe('/user/queue/terminate', function (message) {
+                        try {
+                            const task = JSON.parse(message.body);
+                            addLog('warn', `收到终止任务指令: ID=${task.id}, 类型=${task.type}`);
+                            handleTerminateTask(task);
+                        } catch (e) {
+                            addLog('error', `解析终止任务消息失败: ${e.message}`);
+                        }
+                    });
                 }, function (error) {
                     addLog('error', 'STOMP连接失败!确认您的网络连接是否异常!');
                     // addLog('error', 'STOMP连接失败：' + error);
@@ -2423,7 +2481,76 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         };
         tryConnect();
     }
+    // 处理终止任务（任务长时间未处理完成被引擎判断为超时）
+    async function handleTerminateTask(task) {
+        const taskId = task.id;
 
+        // 从待接取列表中移除（如果存在）
+        const wasInPending = pendingTasks.some(t => t.id === taskId);
+        if (wasInPending) {
+            pendingTasks = pendingTasks.filter(t => t.id !== taskId);
+            renderPendingTasks();
+            addLog('info', `已从待接取列表移除任务 ${taskId}`);
+        }
+
+        //  检查是否是当前正在执行的任务
+        if (currentTask && currentTask.id === taskId) {
+            addLog('warn', `任务 ${taskId} 正在执行，准备终止...`);
+
+            // 停止后端爬虫
+            const apiInfo = apiMap[currentTask.type];
+            if (apiInfo) {
+                try {
+                    await apiRequest(`${apiInfo.base}/crawl/stop`, 'POST');
+                    addLog('success', `已停止任务 ${taskId} 的爬虫`);
+                } catch (err) {
+                    addLog('error', `停止任务 ${taskId} 失败: ${err.message}`);
+                }
+            } else {
+                addLog('error', `未知任务类型 ${currentTask.type}，无法停止`);
+            }
+
+            // 构造失败状态消息
+            const isManualTask = currentTask.id && currentTask.id.toString().startsWith('manual_');
+            if (!isManualTask && stompClient && stompClient.connected) {
+                const failedTask = {
+                    id: currentTask.id,
+                    type: currentTask.type,
+                    status: "4",  // 失败状态
+                    terminalID: currentTask.terminalID || terminalMachineCode,
+                    startDate: currentTask.startDate || formatDateTimeForBackend(new Date()),
+                    endDate: formatDateTimeForBackend(new Date()),
+                    createDate: currentTask.createDate,
+                    assocID: currentTask.assocID,
+                    failure: "任务超时，从列表中移除",
+                    retryCount: currentTask.retryCount || 0,
+                    requestData: currentTask.requestData,
+                    failReasonURL: currentErrorScreenshotUrl || ''
+                };
+                stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(failedTask));
+                addLog('info', `已发送任务失败状态 [ID: ${currentTask.id}]，原因: 任务超时`);
+            } else if (isManualTask) {
+                addLog('info', `手动任务 [ID: ${currentTask.id}] 被终止，不发送状态`);
+            } else {
+                addLog('warn', 'STOMP未连接，无法发送失败状态');
+            }
+
+            // 清理本地任务和轮询
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            currentTask = null;
+            updateButtons(false);
+            statusTag.textContent = '已停止';
+            statusTag.className = 'tag tag-stopped';
+
+            // 如果自动接取开启，尝试接取下一个任务
+            await checkAndTakeNextTask();
+        } else {
+            addLog('info', `终止任务 ${taskId} 不在执行中，已从待接取列表移除${wasInPending ? '' : '（原列表中不存在）'}`);
+        }
+    }
     // Socket.io 连接（用于验证码和手动模式）
     function connectSocketIo() {
         // socketIo = io('http://localhost:3000', {
@@ -2699,6 +2826,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 addLog('warn', '非Electron环境，无法获取机器码，使用临时标识');
                 terminalMachineCode = `web_${Date.now()}_${Math.random().toString(36)}`;
             }
+
+
             addLog('info', '页面初始化中...');
             // 设置默认输出目录为项目上级目录
             if (window.electronAPI && window.electronAPI.getDefaultOutputDir) {
@@ -2739,7 +2868,6 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             // 再恢复验证码
             restoreCaptchaState();
 
-
             // 渲染待接取任务列表
             renderPendingTasks();
 
@@ -2770,7 +2898,16 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     addLog('error', '查询后端状态失败: ' + e.message);
                 }
             }
-
+            const autoTakeSwitch = document.getElementById('autoTakeSwitch');
+            autoTakeSwitch.addEventListener('change', (e) => {
+                autoTakeEnabled = e.target.checked;
+                if (autoTakeEnabled) {
+                    addLog('info', '自动接取任务已开启');
+                    checkAndTakeNextTask();   // 立即尝试接取
+                } else {
+                    addLog('info', '自动接取任务已关闭');
+                }
+            });
             addLog('success', '页面初始化完成');
         } catch (err) {
             errorMsgEl.textContent = '❌ 未连接到后端服务，请启动服务后刷新页面';

@@ -232,6 +232,7 @@ class AuthorInfo {
 function generateAuthorSearchKeyword(authorName) {
     // 清理作者姓名中的多余引号，并用双引号包裹
     let cleanAuthor = authorName.replace(/["']/g, '').trim();
+    console.log("搜索关键词："+`author:"${cleanAuthor}"`)
     return `author:"${cleanAuthor}"`;
 }
 
@@ -341,7 +342,10 @@ async function processSingleAuthor(page, authorUrl, searchKeyword) {
 
 // 处理单个作者关键词（搜索并处理所有匹配的作者）
 async function processAuthorSearch(page, authorName) {
-    const searchKeyword = generateAuthorSearchKeyword(authorName);
+    let searchKeyword = generateAuthorSearchKeyword(authorName);
+    // 清洗换行符
+    const cleanKeyword = searchKeyword.replace(/[\r\n]+/g, '');
+    searchKeyword = cleanKeyword;
     addLog('info', `开始检索作者: ${authorName}，关键词: ${searchKeyword}`);
 
     // 访问谷歌学术首页
@@ -352,7 +356,9 @@ async function processAuthorSearch(page, authorName) {
     await checkAndHandleCaptcha(page, '谷歌学术首页');
 
     // 输入搜索词
-    const searchInput = page.locator('input[name="q"]');
+    // const searchInput = page.locator('input[name="q"]');
+    // ID定位
+    const searchInput = page.locator('#gs_hdr_tsi');
     await searchInput.waitFor({ state: 'visible', timeout: 10000 });
     await humanType(page, searchInput, searchKeyword);
     await randomDelay(page, 800, 2000);

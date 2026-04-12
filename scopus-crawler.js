@@ -199,8 +199,9 @@ async function searchSinglePaper(latestPage, searchKeyWords) {
         }
         if (!inputElement) throw new Error('未找到Search documents输入框');
 
-        await humanType(latestPage, inputElement, searchKeyWords);
-        addLog(`【${searchKeyWords}】输入框已填充检索内容`);
+        const quotedKeyword = `"${searchKeyWords}"`;
+        await humanType(latestPage, inputElement, quotedKeyword);
+        addLog(`【${searchKeyWords}】输入框已填充检索内容: ${quotedKeyword}`);
 
         // 定位搜索按钮
         const buttonLocators = [
