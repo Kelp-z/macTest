@@ -1512,29 +1512,52 @@ async function setupOutputAndLogs(currentOutputDir, timestamp, customKeywords) {
 function findLocalBrowser() {
     addLog('info', '\n=== 开始查找本地浏览器 ===');
 
+    // 导入工具函数
+    const { isMacOSApp, getMacOSAppExecutable } = require('./crawler-utils');
+
     // 递归查找函数
-    function findBrowserRecursive(dir) {
+    function findBrowserRecursive(dir, depth = 0) {
         try {
             const items = fs.readdirSync(dir, { withFileTypes: true });
             for (const item of items) {
                 const fullPath = path.join(dir, item.name);
-                if (item.isDirectory()) {
-                    const found = findBrowserRecursive(fullPath);
-                    if (found) return found;
+                
+                // 如果是 .app 文件（macOS），获取其中的可执行文件
+                if (item.isDirectory() && item.name.toLowerCase().endsWith('.app')) {
+                    if (isMacOSApp(fullPath)) {
+                        const executable = getMacOSAppExecutable(fullPath);
+                        if (executable) {
+                            addLog('info', `✓ 找到 macOS 应用包并提取可执行文件: ${fullPath}`);
+                            addLog('info', `  可执行文件路径: ${executable}`);
+                            return executable;
+                        }
+                    }
+                    // ⚠️ 重要：不要递归进入 .app 内部，避免找到 Helper 进程
+                    continue;
+                } else if (item.isDirectory()) {
+                    // 普通目录，递归查找（限制深度）
+                    if (depth < 10) {
+                        const found = findBrowserRecursive(fullPath, depth + 1);
+                        if (found) return found;
+                    }
                 } else if (item.name.toLowerCase() === 'chrome.exe') {
+                    // Windows 浏览器
                     addLog('info', `✓ 找到浏览器（递归查找）: ${fullPath}`);
                     return fullPath;
                 }
             }
-        } catch (error) {}
+        } catch (error) {
+            addLog('error', `查找浏览器时出错: ${error.message}`);
+        }
         return null;
     }
 
     const keyDirs = [
+        '/Users/chuanyunxu/Documents/Dev/Java/workspace/SPM/SPM_Retriever/browsers/chromium-1217/chrome-mac-arm64',
         path.join(process.cwd(), 'browsers'),
-        path.join(path.dirname(process.execPath), 'browsers'),
-        process.cwd(),
-        path.dirname(process.execPath)
+        // path.join(path.dirname(process.execPath), 'browsers'),
+        // process.cwd(),
+        // path.dirname(process.execPath)
     ];
 
     for (const keyDir of keyDirs) {
@@ -1620,7 +1643,7 @@ async function setupBrowserEnvironment() {
     // cleanupAllChromiumData();
 
     debugger
-    
+
     const browserPath = await ensureBrowser();
     if (!browserPath) {
         throw new Error('未找到/下载浏览器，无法继续');
