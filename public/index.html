@@ -639,7 +639,7 @@
         <!--        </label>-->
 
         <label class="switch">
-            <input type="checkbox" id="generateExcelCheckbox" checked>
+            <input type="checkbox" id="generateExcelCheckbox" >
             <span class="slider"></span>
         </label>
         <span class="switch-label">📊 生成Excel文件</span>
@@ -776,7 +776,7 @@
     <div class="logs-panel">
         <label>📋 执行日志：</label>
         <label class="switch">
-            <input type="checkbox" id="showAllLogsCheckbox" checked>
+            <input type="checkbox" id="showAllLogsCheckbox" >
             <span class="slider"></span>
         </label>
         <span class="switch-label">详细调试模式</span>
@@ -2018,10 +2018,10 @@
 
 [
   {
-    "authorName": "Brook A H",
+    "authorName": "Brook A",
     "familyName": "Brook",
-    "givenName": "A H",
-    "orcid": ""
+    "givenName": "A",
+    "orcid": "0000-0003-1009-6408"
   },
   {
     "authorName": "Stommel J",
@@ -2759,7 +2759,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
 
         // 可切换不同任务类型测试
         //  const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE','SCOPUS_INCLUSION', 'SCOPUS_AUTHORS','SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS'];
-        const taskTypes = ['SCOPUS_INCLUSION'];
+         const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE','SCOPUS_INCLUSION', 'SCOPUS_AUTHORS','SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS'];
+        // const taskTypes = ['SCOPUS_INCLUSION'];
         const randomType = taskTypes[Math.floor(Math.random() * taskTypes.length)];
 
 
