@@ -292,7 +292,7 @@ async function extractAuthorDetails(page, authorUrl, expectedAuthorName) {
     }
 }
 
-// 批量搜索函数（内部使用）
+// 批量搜索函数
 async function searchAuthors(page, authors, outputDirs) {
     const results = [];
     const searchPageUrl = page.url();
@@ -312,139 +312,208 @@ async function searchAuthors(page, authors, outputDirs) {
             await page.goto(searchPageUrl, { waitUntil: 'domcontentloaded' });
         }
 
-        await page.waitForSelector('input[name="searchterm1"]', { timeout: 15000 });
-        const lastNameInput = await page.$('input[name="searchterm1"]');
-        const firstNameInput = await page.$('input[name="searchterm2"]');
-
-        if (!lastNameInput || !firstNameInput) {
-            addLog('error', '无法获取输入框，跳过该作者');
-            continue;
+        let searchResult;
+        if (author.orcid && author.orcid.trim()!==''){
+            searchResult = await searchByOrcid(page,author);
+        }else {
+            searchResult = await searchByName(page,author);
         }
-
-        await lastNameInput.fill('');
-        await firstNameInput.fill('');
-        await lastNameInput.fill(author.lastName);
-        await firstNameInput.fill(author.firstName);
-        addLog('info', `已填入: 姓氏="${author.lastName}", 名字="${author.firstName}"`);
-
-        const submitBtn = await page.$('#authorSubmitBtn');
-        if (!submitBtn) {
-            addLog('error', '找不到搜索按钮，跳过该作者');
-            continue;
-        }
-
-        await Promise.all([
-            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-            submitBtn.click()
-        ]);
-
-        const resultUrl = page.url();
-        addLog('info', `搜索结果页 URL: ${resultUrl}`);
-
-        await page.waitForTimeout(3000);
-
-        // 提取结果总数
-        let totalResults = 0;
-        const resultsCountElement = await page.$('h1.documentHeader.preview span.resultsCount');
-        if (resultsCountElement) {
-            const countText = await resultsCountElement.textContent();
-            totalResults = parseInt(countText.trim(), 10) || 0;
-            addLog('info', `检索到 ${totalResults} 条作者结果`);
-        } else {
-            addLog('warn', '未找到结果计数元素，可能无结果或页面加载异常');
-        }
-
-        // 提取表格数据
-        const authorItems = [];
-        const tableExists = await page.$('#srchResultsList');
-        if (tableExists) {
-            const rows = await page.$$('#srchResultsList tbody tr.searchArea');
-            addLog('info', `找到 ${rows.length} 个作者条目`);
-
-            for (let idx = 0; idx < rows.length; idx++) {
-                const row = rows[idx];
-
-                const authorLink = await row.$('td.authorResultsNamesCol a');
-                let authorName = '', authorUrl = '';
-                if (authorLink) {
-                    authorName = await authorLink.textContent();
-                    authorUrl = await authorLink.getAttribute('href');
-                    authorName = authorName ? authorName.trim() : '';
-                } else {
-                    const nameCell = await row.$('td.authorResultsNamesCol');
-                    if (nameCell) {
-                        authorName = await nameCell.textContent();
-                        authorName = authorName ? authorName.trim() : '';
-                    }
-                }
-
-                const affiliationCell = await row.$('td.dataCol5');
-                let affiliation = '';
-                if (affiliationCell) {
-                    affiliation = await affiliationCell.textContent();
-                    affiliation = affiliation ? affiliation.trim() : '';
-                }
-
-                const cityCell = await row.$('td.dataCol6');
-                let city = '';
-                if (cityCell) {
-                    city = await cityCell.textContent();
-                    city = city ? city.trim() : '';
-                }
-
-                const countryCell = await row.$('td.dataCol7');
-                let country = '';
-                if (countryCell) {
-                    country = await countryCell.textContent();
-                    country = country ? country.trim() : '';
-                }
-
-                authorItems.push({
-                    authorName,
-                    authorUrl,
-                    affiliation,
-                    city,
-                    country,
-                    details: null
-                });
-            }
-        } else {
-            addLog('warn', '未找到结果表格 #srchResultsList');
-        }
-
-        // 提取详情（最多5个）
-        const maxDetails = 5;
-        for (let idx = 0; idx < Math.min(authorItems.length, maxDetails); idx++) {
-            if (shouldStop) break;
-            const item = authorItems[idx];
-            if (item.authorUrl) {
-                addLog('info', `正在提取第 ${idx+1} 个作者的详情: ${item.authorName}`);
-                const details = await extractAuthorDetails(page, item.authorUrl, item.authorName);
-                item.details = details;
-            } else {
-                item.details = null;
-            }
-        }
-
-        const searchResult = {
-            searchAuthor: {
-                lastName: author.lastName,
-                firstName: author.firstName,
-                orcid: author.orcid
-            },
-            resultPageUrl: resultUrl,
-            totalResults: totalResults,
-            authors: authorItems
-        };
         results.push(searchResult);
-
-        await page.goBack({ waitUntil: 'domcontentloaded' });
+        await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {
+            addLog('warn', '返回搜索页失败，尝试重新导航');
+            return page.goto(searchPageUrl, { waitUntil: 'domcontentloaded' });
+        });
+        await page.waitForSelector('input[name="searchterm1"]', { timeout: 10000 });
         addLog('info', '已返回作者搜索页面');
     }
 
     return results;
 }
 
+async function searchByOrcid(page, author) {
+    const orcid = author.orcid.trim();
+    addLog('info', `使用 ORCID 检索: ${orcid}`);
+
+    // 定位 ORCID 输入框和按钮
+    const orcidInput = await page.$('#orcidId');
+    const orcidSubmitBtn = await page.$('#orcidSubmitBtn');
+
+    if (!orcidInput) {
+        addLog('error', '未找到 ORCID 输入框 #orcidId，回退到姓名检索');
+        return await searchByName(page, author);
+    }
+    if (!orcidSubmitBtn) {
+        addLog('error', '未找到 ORCID 搜索按钮 #orcidSubmitBtn，回退到姓名检索');
+        return await searchByName(page, author);
+    }
+
+    // 填写 ORCID
+    await orcidInput.fill('');
+    await orcidInput.fill(orcid);
+
+    // 点击搜索，监听导航
+    await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
+        orcidSubmitBtn.click()
+    ]);
+
+    const resultUrl = page.url();
+    addLog('info', `ORCID 搜索结果页 URL: ${resultUrl}`);
+    await page.waitForTimeout(3000);
+
+    // 检查是否无结果
+    const bodyText = await page.locator('body').innerText();
+    if (bodyText.includes('No authors were found')) {
+        addLog('warn', `ORCID ${orcid} 未检索到任何作者`);
+        return {
+            searchAuthor: {
+                lastName: author.lastName,
+                firstName: author.firstName,
+                orcid: author.orcid
+            },
+            resultPageUrl: resultUrl,
+            totalResults: 0,
+            authors: []
+        };
+    }
+
+    // 检查是否直接跳转到作者详情页（ORCID 唯一时可能直接进入详情页）
+    const isDetailPage = await page.$('h1[data-testid="author-profile-name"]');
+    if (isDetailPage) {
+        addLog('info', 'ORCID 检索直接进入作者详情页，提取信息');
+        const details = await extractAuthorDetails(page, page.url(), `${author.firstName} ${author.lastName}`);
+        if (details) {
+            const authorItem = {
+                authorName: details.authorName,
+                authorUrl: page.url(),
+                affiliation: '',
+                city: '',
+                country: '',
+                details: details
+            };
+            return {
+                searchAuthor: {
+                    lastName: author.lastName,
+                    firstName: author.firstName,
+                    orcid: author.orcid
+                },
+                resultPageUrl: resultUrl,
+                totalResults: 1,
+                authors: [authorItem]
+            };
+        }
+    }
+
+    // 否则按列表页解析
+    return await parseSearchResultsPage(page, author);
+}
+async function searchByName(page, author) {
+    addLog('info', `使用姓名检索: ${author.lastName}, ${author.firstName}`);
+
+    // 清空并填写姓名输入框
+    const lastNameInput = await page.$('input[name="searchterm1"]');
+    const firstNameInput = await page.$('input[name="searchterm2"]');
+    if (!lastNameInput || !firstNameInput) {
+        throw new Error('无法获取姓名输入框');
+    }
+    await lastNameInput.fill('');
+    await firstNameInput.fill('');
+    await lastNameInput.fill(author.lastName);
+    await firstNameInput.fill(author.firstName);
+
+    const submitBtn = await page.$('#authorSubmitBtn');
+    if (!submitBtn) throw new Error('找不到姓名搜索按钮');
+
+    await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
+        submitBtn.click()
+    ]);
+
+    const resultUrl = page.url();
+    addLog('info', `姓名搜索结果页 URL: ${resultUrl}`);
+    await page.waitForTimeout(3000);
+
+    // 解析结果
+    return await parseSearchResultsPage(page, author);
+}
+async function parseSearchResultsPage(page, author) {
+    // 获取结果总数
+    let totalResults = 0;
+    const resultsCountSpan = await page.$('span.resultsCount');
+    if (resultsCountSpan) {
+        const countText = await resultsCountSpan.textContent();
+        totalResults = parseInt(countText.trim(), 10) || 0;
+        addLog('info', `检索到 ${totalResults} 条作者结果`);
+    } else {
+        addLog('warn', '未找到结果计数元素，可能无结果');
+    }
+
+    // 提取表格数据
+    const authorItems = [];
+    const tableExists = await page.$('#srchResultsList');
+    if (tableExists) {
+        const rows = await page.$$('#srchResultsList tbody tr.searchArea');
+        addLog('info', `找到 ${rows.length} 个作者条目`);
+
+        for (let idx = 0; idx < rows.length; idx++) {
+            const row = rows[idx];
+            const authorLink = await row.$('td.authorResultsNamesCol a');
+            let authorName = '', authorUrl = '';
+            if (authorLink) {
+                authorName = await authorLink.textContent();
+                authorUrl = await authorLink.getAttribute('href');
+                authorName = authorName ? authorName.trim() : '';
+            } else {
+                const nameCell = await row.$('td.authorResultsNamesCol');
+                if (nameCell) {
+                    authorName = await nameCell.textContent();
+                    authorName = authorName ? authorName.trim() : '';
+                }
+            }
+
+            const affiliationCell = await row.$('td.dataCol5');
+            let affiliation = affiliationCell ? (await affiliationCell.textContent()).trim() : '';
+            const cityCell = await row.$('td.dataCol6');
+            let city = cityCell ? (await cityCell.textContent()).trim() : '';
+            const countryCell = await row.$('td.dataCol7');
+            let country = countryCell ? (await countryCell.textContent()).trim() : '';
+
+            authorItems.push({
+                authorName,
+                authorUrl,
+                affiliation,
+                city,
+                country,
+                details: null
+            });
+        }
+    } else {
+        addLog('warn', '未找到结果表格 #srchResultsList');
+    }
+
+    // 提取前5个作者的详情
+    const maxDetails = 5;
+    for (let idx = 0; idx < Math.min(authorItems.length, maxDetails); idx++) {
+        if (shouldStop) break;
+        const item = authorItems[idx];
+        if (item.authorUrl) {
+            addLog('info', `正在提取第 ${idx+1} 个作者的详情: ${item.authorName}`);
+            const details = await extractAuthorDetails(page, item.authorUrl, item.authorName);
+            item.details = details;
+        }
+    }
+
+    return {
+        searchAuthor: {
+            lastName: author.lastName,
+            firstName: author.firstName,
+            orcid: author.orcid || ''
+        },
+        resultPageUrl: page.url(),
+        totalResults: totalResults,
+        authors: authorItems
+    };
+}
 function writeToExcel(results, filePath) {
     if (!results || results.length === 0) {
         addLog('info', '无数据可写入 Excel');

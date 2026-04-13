@@ -344,8 +344,8 @@ async function processSingleAuthor(page, authorUrl, searchKeyword) {
 async function processAuthorSearch(page, authorName) {
     let searchKeyword = generateAuthorSearchKeyword(authorName);
     // 清洗换行符
-    const cleanKeyword = searchKeyword.replace(/[\r\n]+/g, '');
-    searchKeyword = cleanKeyword;
+    // const cleanKeyword = searchKeyword.replace(/[\r\n]+/g, '');
+    // searchKeyword = cleanKeyword;
     addLog('info', `开始检索作者: ${authorName}，关键词: ${searchKeyword}`);
 
     // 访问谷歌学术首页

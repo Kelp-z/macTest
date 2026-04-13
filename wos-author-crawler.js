@@ -508,6 +508,182 @@ async function extractAuthorDetailFromPage(page) {
     };
 }
 
+ // 切换作者检索模式 'Name Search' 或 'Author Identifiers'
+async function switchToSearchMode(page, targetMode) {
+    const dropdownButton = await page.$('#snSearchType wos-select button');
+    if (!dropdownButton) throw new Error('未找到检索方式选择按钮');
+
+    // 获取当前选中的模式文本
+    const selectedTextSpan = await dropdownButton.$('span.dropdown-text');
+    let currentMode = '';
+    if (selectedTextSpan) {
+        currentMode = await selectedTextSpan.textContent();
+        currentMode = currentMode ? currentMode.trim() : '';
+    } else {
+        currentMode = await dropdownButton.textContent();
+        currentMode = currentMode ? currentMode.trim() : '';
+    }
+
+    if (currentMode === targetMode) {
+        addLog('info', `已是目标模式: ${targetMode}`);
+        return;
+    }
+
+    addLog('info', `切换检索模式: ${currentMode} -> ${targetMode}`);
+    await dropdownButton.click();
+
+    // 根据目标模式选择对应的选项（使用 aria-label 或文本匹配）
+    let targetOption = null;
+    if (targetMode === 'Name Search') {
+        targetOption = await page.$('div[role="option"][aria-label="Name Search"]');
+        if (!targetOption) targetOption = await page.$('wos-select .dropdown-item:has-text("Name Search")');
+    } else if (targetMode === 'Author Identifiers') {
+        targetOption = await page.$('div[role="option"][aria-label="Author Identifiers"]');
+        if (!targetOption) targetOption = await page.$('wos-select .dropdown-item:has-text("Author Identifiers")');
+    }
+
+    if (!targetOption) throw new Error(`未找到目标选项: ${targetMode}`);
+    await targetOption.click();
+    await page.waitForTimeout(2000); // 等待模式切换完成
+    addLog('success', `已切换到 ${targetMode} 模式`);
+}
+
+// 获取当前模式下的输入框和搜索按钮
+async function getSearchElementsByMode(page, mode) {
+    let inputFields = [];
+    let searchButton = await page.$('button[data-ta="run-search"]');
+    if (!searchButton) throw new Error('未找到搜索按钮');
+
+    if (mode === 'Name Search') {
+        const lastNameInput = await page.$('input[aria-label="Last Name"]');
+        const firstNameInput = await page.$('input[aria-label="First Name"]');
+        if (!lastNameInput || !firstNameInput) throw new Error('未找到姓氏/名字输入框');
+        inputFields = [lastNameInput, firstNameInput];
+    } else if (mode === 'Author Identifiers') {
+        // ORCID 输入框的选择器
+        let orcidInput = await page.$('input[aria-label="Web of Science ResearcherID or ORCID"]');
+        if (!orcidInput) orcidInput = await page.$('#mat-input-11');
+        if (!orcidInput) orcidInput = await page.$('input[name="author-id"]');
+        if (!orcidInput) throw new Error('未找到 ORCID 输入框');
+
+        inputFields = [orcidInput];
+    }
+    return { inputFields, searchButton };
+}
+
+
+ //使用 ORCID 进行检索并解析结果
+async function searchByOrcid(page, orcid, authorInfo) {
+    addLog('info', `使用 ORCID 检索: ${orcid}`);
+    const { inputFields, searchButton } = await getSearchElementsByMode(page, 'Author Identifiers');
+    const orcidInput = inputFields[0];
+    await orcidInput.fill('');
+    await orcidInput.fill(orcid);
+    addLog('info', `已填入 ORCID: ${orcid}`);
+
+    // 点击搜索并等待导航
+    await searchButton.click();
+    await page.waitForTimeout(5000);
+
+    // 等待三种结果中的任意一个出现
+    await Promise.race([
+        page.waitForSelector('h1.search-info-title:has-text("results from Web of Science Researchers for:")', { timeout: 30000 }).catch(() => null),
+        page.waitForSelector('text="Your search found no results"', { timeout: 30000 }).catch(() => null),
+        page.waitForSelector('h1[data-test="author-name"]', { timeout: 30000 }).catch(() => null)
+    ]);
+
+    await page.waitForTimeout(2000);
+
+    const hasResultsList = await page.$('h1.search-info-title:has-text("results from Web of Science Researchers for:")') !== null;
+    const hasNoResult = await page.$('text="Your search found no results"') !== null;
+    const isDetailPage = await page.$('h1[data-test="author-name"]') !== null;
+
+    let totalResults = 0;
+    let authorItems = [];
+
+    if (hasNoResult) {
+        addLog('warn', `ORCID ${orcid} 检索无结果`);
+    } else if (isDetailPage) {
+        addLog('info', `ORCID 检索直接进入作者详情页`);
+        const detail = await extractAuthorDetailFromPage(page);
+        authorItems = [detail];
+        totalResults = 1;
+        addLog('info', `成功解析作者详情：${detail.authorName}`);
+    } else if (hasResultsList) {
+        // 提取结果数量
+        const resultCountSpan = await page.$('h1.search-info-title span.brand-blue');
+        if (resultCountSpan) {
+            const countText = await resultCountSpan.textContent();
+            totalResults = parseInt(countText, 10) || 0;
+            addLog('info', `检索到 ${totalResults} 个作者结果`);
+        } else {
+            addLog('warn', '未找到结果数量元素');
+        }
+
+        if (totalResults > 0) {
+            // 提取作者列表
+            authorItems = await page.$$eval('app-author-summary-record', records => {
+                return records.map(record => {
+                    const nameLink = record.querySelector('h3.author-name a');
+                    const authorName = nameLink ? nameLink.textContent.trim() : '';
+                    let authorUrl = nameLink ? nameLink.getAttribute('href') : '';
+                    if (authorUrl && !authorUrl.startsWith('http')) {
+                        authorUrl = 'https://webofscience.clarivate.cn' + authorUrl;
+                    }
+                    const paragraphs = Array.from(record.querySelectorAll('p.font-size-14'));
+                    let institution = '';
+                    let location = '';
+                    let researcherId = '';
+                    for (const p of paragraphs) {
+                        const text = p.textContent.trim();
+                        if (text.includes('Web of Science ResearcherID')) {
+                            const idSpan = p.querySelector('span:last-child');
+                            researcherId = idSpan ? idSpan.textContent.trim() : '';
+                        } else {
+                            if (!institution) institution = text;
+                            else if (!location) location = text;
+                        }
+                    }
+                    return { authorName, authorUrl, institution, location, researcherId, orcid: '', hIndex: '' };
+                });
+            });
+            addLog('info', `成功解析 ${authorItems.length} 个作者条目`);
+
+            // 对列表中的每个作者，访问详情页获取 ORCID 和 H-Index
+            for (let j = 0; j < authorItems.length; j++) {
+                const auth = authorItems[j];
+                if (!auth.authorUrl) {
+                    auth.orcid = '无';
+                    auth.hIndex = '无';
+                    continue;
+                }
+                addLog('info', `正在访问作者详情页: ${auth.authorName} (${auth.authorUrl})`);
+                let detailPage = null;
+                try {
+                    detailPage = await page.context().newPage();
+                    await detailPage.goto(auth.authorUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    await detailPage.waitForSelector('h1[data-test="author-name"]', { timeout: 15000 });
+                    await waitForCaptchaClear(detailPage);
+                    await closeCookiePopup(detailPage);
+                    const detail = await extractAuthorDetailFromPage(detailPage);
+                    auth.orcid = detail.orcid;
+                    auth.hIndex = detail.hIndex;
+                    if (detail.institution) auth.institution = detail.institution;
+                    addLog('info', `作者 ${auth.authorName} - ORCID: ${detail.orcid}, H-Index: ${detail.hIndex}`);
+                } catch (err) {
+                    addLog('error', `访问详情页失败 ${auth.authorName}: ${err.message}`);
+                    auth.orcid = '无';
+                    auth.hIndex = '无';
+                } finally {
+                    if (detailPage) await detailPage.close();
+                }
+                await page.waitForTimeout(1000);
+            }
+        }
+    }
+
+    return { totalResults, authorItems };
+}
 // 批量搜索函数
 async function crawlWosAuthors(authors, options = {}) {
     const { onManualLoginRequired } = options;
@@ -678,7 +854,8 @@ async function crawlWosAuthors(authors, options = {}) {
             throw new Error('未找到姓氏、名字输入框或搜索按钮');
         }
 
-        //  批量搜索
+
+        // 批量搜索
         for (let i = 0; i < authors.length; i++) {
             if (shouldStop) {
                 addLog('warn', '检测到停止信号，终止批量搜索');
@@ -687,68 +864,56 @@ async function crawlWosAuthors(authors, options = {}) {
             const author = authors[i];
             const familyName = author.familyName || '';
             const givenName = author.givenName || '';
-            addLog('info', `处理第 ${i + 1}/${authors.length} 位作者: ${familyName} ${givenName}`);
+            const orcid = author.orcid ? author.orcid.trim() : '';
+            addLog('info', `处理第 ${i + 1}/${authors.length} 位作者: ${familyName} ${givenName} (ORCID: ${orcid || '无'})`);
 
             // 搜索前检测验证和弹窗
             await waitForCaptchaClear(page);
             await closeCookiePopup(page);
 
-            // 清空输入框
-            await lastNameInput.fill('');
-            await firstNameInput.fill('');
-            await page.waitForTimeout(300);
+            let mode = (orcid && orcid !== '') ? 'Author Identifiers' : 'Name Search';
+            await switchToSearchMode(page, mode);
 
-            // 填充
-            await lastNameInput.fill(familyName);
-            await firstNameInput.fill(givenName);
-            addLog('info', `已填入姓氏: ${familyName}, 名字: ${givenName}`);
-
-            // 点击搜索按钮并等待导航
-            await searchButton.click();
-
-
-            // 额外等待确保内容稳定
-            await page.waitForTimeout(5000);
-
-            // 等待三种结果中的任意一个出现
-            await Promise.race([
-                page.waitForSelector('h1.search-info-title:has-text("results from Web of Science Researchers for:")', { timeout: 30000 }).catch(() => null),
-                page.waitForSelector('text="Your search found no results"', { timeout: 30000 }).catch(() => null),
-                page.waitForSelector('h1[data-test="author-name"]', { timeout: 30000 }).catch(() => null)
-            ]);
-
-            // 额外等待确保内容稳定
-            await page.waitForTimeout(2000);
-
-            // 判断结果类型
-            const hasResultsList = await page.$('h1.search-info-title:has-text("results from Web of Science Researchers for:")') !== null;
-            const hasNoResult = await page.$('text="Your search found no results"') !== null;
-            const isDetailPage = await page.$('h1[data-test="author-name"]') !== null;
-
+            // 获取当前模式下的输入框和搜索按钮
+            const { inputFields, searchButton } = await getSearchElementsByMode(page, mode);
             let totalResults = 0;
             let authorItems = [];
 
-            if (hasNoResult) {
-                addLog('warn', `作者 ${familyName} ${givenName} 检索无结果，跳过解析。`);
-            } else if (isDetailPage) {
-                addLog('info', `检索到单个作者，直接进入详情页：${familyName} ${givenName}`);
-                // 直接从详情页提取信息
-                const detail = await extractAuthorDetailFromPage(page);
-                authorItems = [detail];
-                totalResults = 1;
-                addLog('info', `成功解析作者详情：${detail.authorName}`);
-            } else if (hasResultsList) {
-                // 提取结果数量
-                const resultCountSpan = await page.$('h1.search-info-title span.brand-blue');
-                if (resultCountSpan) {
-                    const countText = await resultCountSpan.textContent();
-                    totalResults = parseInt(countText, 10) || 0;
-                    addLog('info', `检索到 ${totalResults} 个作者结果`);
-                } else {
-                    addLog('warn', '未找到结果数量元素');
-                }
+            if (mode === 'Name Search') {
+                const [lastNameInput, firstNameInput] = inputFields;
+                // 清空并填充姓名
+                await lastNameInput.fill('');
+                await firstNameInput.fill('');
+                await page.waitForTimeout(300);
+                await lastNameInput.fill(familyName);
+                await firstNameInput.fill(givenName);
+                addLog('info', `已填入姓氏: ${familyName}, 名字: ${givenName}`);
 
-                if (totalResults > 0) {
+                // 点击搜索并等待导航
+                await searchButton.click();
+                await page.waitForTimeout(5000);
+
+                // 等待结果
+                await Promise.race([
+                    page.waitForSelector('h1.search-info-title:has-text("results from Web of Science Researchers for:")', { timeout: 30000 }).catch(() => null),
+                    page.waitForSelector('text="Your search found no results"', { timeout: 30000 }).catch(() => null),
+                    page.waitForSelector('h1[data-test="author-name"]', { timeout: 30000 }).catch(() => null)
+                ]);
+                await page.waitForTimeout(2000);
+
+                const hasResultsList = await page.$('h1.search-info-title:has-text("results from Web of Science Researchers for:")') !== null;
+                const hasNoResult = await page.$('text="Your search found no results"') !== null;
+                const isDetailPage = await page.$('h1[data-test="author-name"]') !== null;
+
+                if (hasNoResult) {
+                    addLog('warn', `作者 ${familyName} ${givenName} 检索无结果，跳过解析。`);
+                } else if (isDetailPage) {
+                    addLog('info', `检索到单个作者，直接进入详情页：${familyName} ${givenName}`);
+                    const detail = await extractAuthorDetailFromPage(page);
+                    authorItems = [detail];
+                    totalResults = 1;
+                    addLog('info', `成功解析作者详情：${detail.authorName}`);
+                } else if (hasResultsList) {
                     // 提取结果数量
                     const resultCountSpan = await page.$('h1.search-info-title span.brand-blue');
                     if (resultCountSpan) {
@@ -760,7 +925,6 @@ async function crawlWosAuthors(authors, options = {}) {
                     }
 
                     if (totalResults > 0) {
-                        // 提取作者列表
                         authorItems = await page.$$eval('app-author-summary-record', records => {
                             return records.map(record => {
                                 const nameLink = record.querySelector('h3.author-name a');
@@ -769,7 +933,6 @@ async function crawlWosAuthors(authors, options = {}) {
                                 if (authorUrl && !authorUrl.startsWith('http')) {
                                     authorUrl = 'https://webofscience.clarivate.cn' + authorUrl;
                                 }
-
                                 const paragraphs = Array.from(record.querySelectorAll('p.font-size-14'));
                                 let institution = '';
                                 let location = '';
@@ -784,15 +947,7 @@ async function crawlWosAuthors(authors, options = {}) {
                                         else if (!location) location = text;
                                     }
                                 }
-                                return {
-                                    authorName,
-                                    authorUrl,
-                                    institution,
-                                    location,
-                                    researcherId,
-                                    orcid: '',
-                                    hIndex: ''
-                                };
+                                return { authorName, authorUrl, institution, location, researcherId, orcid: '', hIndex: '' };
                             });
                         });
                         addLog('info', `成功解析 ${authorItems.length} 个作者条目`);
@@ -809,16 +964,13 @@ async function crawlWosAuthors(authors, options = {}) {
                             let detailPage = null;
                             try {
                                 detailPage = await page.context().newPage();
-                                await detailPage.goto(auth.authorUrl, {waitUntil: 'domcontentloaded', timeout: 30000});
-                                await detailPage.waitForSelector('h1[data-test="author-name"]', {timeout: 15000});
+                                await detailPage.goto(auth.authorUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                                await detailPage.waitForSelector('h1[data-test="author-name"]', { timeout: 15000 });
                                 await waitForCaptchaClear(detailPage);
                                 await closeCookiePopup(detailPage);
-
-                                // 提取详情页信息
                                 const detail = await extractAuthorDetailFromPage(detailPage);
                                 auth.orcid = detail.orcid;
                                 auth.hIndex = detail.hIndex;
-                                // 可选：覆盖机构信息（如果详情页更完整）
                                 if (detail.institution) auth.institution = detail.institution;
                                 addLog('info', `作者 ${auth.authorName} - ORCID: ${detail.orcid}, H-Index: ${detail.hIndex}`);
                             } catch (err) {
@@ -832,29 +984,39 @@ async function crawlWosAuthors(authors, options = {}) {
                         }
                     }
                 }
+            } else {
+                // Author Identifiers 模式
+                const searchResult = await searchByOrcid(page, orcid, author);
+                totalResults = searchResult.totalResults;
+                authorItems = searchResult.authorItems;
             }
+
             searchResults.push({
-                index: i+1,
+                index: i + 1,
                 familyName,
                 givenName,
-                hasResults: !hasNoResult,
+                hasResults: totalResults > 0,
                 totalResults,
                 authors: authorItems,
                 resultPageUrl: page.url()
             });
 
-            await page.goto(targetUrl, {waitUntil: 'domcontentloaded', timeout: 30000});
+            // 返回作者搜索页，准备下一个检索
+            await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
             addLog('info', '已返回作者搜索页面');
-            await page.waitForTimeout(10000);
+            await page.waitForTimeout(5000);
             await closeCookiePopup(page);
             await waitForCaptchaClear(page);
-            lastNameInput = await page.$('input[aria-label="Last Name"]');
-            firstNameInput = await page.$('input[aria-label="First Name"]');
-            searchButton = await page.$('button[data-ta="run-search"]');
-            if (!lastNameInput || !firstNameInput || !searchButton) {
-                throw new Error('返回后未找到姓氏、名字输入框或搜索按钮');
-            }
+
         }
+
+        await page.goto(targetUrl, {waitUntil: 'domcontentloaded', timeout: 30000});
+        addLog('info', '已返回作者搜索页面');
+        await page.waitForTimeout(10000);
+        await closeCookiePopup(page);
+        await waitForCaptchaClear(page);
+
+
 
         addLog('success', `批量搜索完成，共处理 ${searchResults.length} 位作者`);
 
