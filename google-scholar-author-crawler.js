@@ -13,7 +13,7 @@ const {
     ensureDir
 } = require('./crawler-utils');
 const {formatError} = require("./error-utils");
-const {takeErrorScreenshot} = require("./crawler-utils");
+const {takeErrorScreenshot,requestUserIntervention} = require("./crawler-utils");
 //  配置读取
 const DEFAULT_CONFIG = {
     OUTPUT_BASE_DIR_NAME: 'output/google_authors'
@@ -168,6 +168,12 @@ async function handleCaptchaManually(page) {
     addLog('warn', '📌 请在弹出的浏览器窗口中手动完成验证');
     addLog('warn', '📌 完成后脚本会自动继续运行');
     addLog('warn', '================\n');
+
+    await requestUserIntervention({
+        type: 'captcha-manual',
+        data: { message: '请手动完成浏览器中的人机验证' }
+    });
+
     await page.bringToFront();
     // 保存截图（开发阶段）
     // ensureDir(path.join(currentOutputDir, 'screenshots'));
@@ -599,7 +605,7 @@ function findLocalBrowser() {
             const items = fs.readdirSync(dir, { withFileTypes: true });
             for (const item of items) {
                 const fullPath = path.join(dir, item.name);
-                
+
                 // 如果是 .app 文件（macOS），获取其中的可执行文件
                 if (item.isDirectory() && item.name.toLowerCase().endsWith('.app')) {
                     if (isMacOSApp(fullPath)) {
@@ -813,8 +819,8 @@ async function crawlGoogleScholarAuthors(input = [], options = {}) {
         crawlerState.error = formattedError;
 
         // 将原始详细信息写入日志
-        addLog('error', formattedError.detail);
-        addLog('info', `用户提示：${formattedError.userMessage}`);
+        addLog('info', formattedError.detail);
+        addLog('error', `用户提示：${formattedError.userMessage}`);
         // 抛出自定义错误
         throw formattedError;
     } finally {

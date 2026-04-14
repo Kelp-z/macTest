@@ -776,8 +776,8 @@ async function crawlScopusAuthors(authorInput, options = {}) {
         const formattedError = formatError(error, 'scopus-author');
         crawlerState.error = formattedError;
         // 将原始详细信息写入日志
-        addLog('error', formattedError.detail);
-        addLog('info', `用户提示：${formattedError.userMessage}`);
+        addLog('info', formattedError.detail);
+        addLog('error', `用户提示：${formattedError.userMessage}`);
         // 抛出自定义错误
         throw formattedError;
     } finally {

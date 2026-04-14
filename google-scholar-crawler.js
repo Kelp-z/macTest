@@ -1,12 +1,15 @@
 // google-scholar-crawler.js
-const { chromium } = require('playwright');
+// const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+chromium.use(StealthPlugin()); // 激活隐身插件
 const excel = require('excel4node');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 let generateExcel= ''
 const errorUtils = require('./error-utils');
-const {takeErrorScreenshot} = require("./crawler-utils");
+const {takeErrorScreenshot,requestUserIntervention } = require("./crawler-utils");
 const {
     humanClick,
     humanType,
@@ -191,6 +194,11 @@ async function handleCaptchaManually(page) {
     addLog('warn', '📌 请在弹出的浏览器窗口中手动完成验证');
     addLog('warn', '📌 完成后脚本会自动继续运行');
     addLog('warn', '================\n');
+
+    await requestUserIntervention({
+        type: 'captcha-manual',
+        data: { message: '请手动完成浏览器中的人机验证' }
+    });
     await page.bringToFront();
     // 截图目录（开发阶段）
     // ensureDir(path.join(currentOutputDir, 'screenshots'));
@@ -1521,7 +1529,7 @@ function findLocalBrowser() {
             const items = fs.readdirSync(dir, { withFileTypes: true });
             for (const item of items) {
                 const fullPath = path.join(dir, item.name);
-                
+
                 // 如果是 .app 文件（macOS），获取其中的可执行文件
                 if (item.isDirectory() && item.name.toLowerCase().endsWith('.app')) {
                     if (isMacOSApp(fullPath)) {
@@ -1891,35 +1899,11 @@ async function crawlGoogleScholar(input = [], options = {}) {
         const formattedError = errorUtils.formatError(error, 'google');
         crawlerState.error = formattedError;
         // 将原始详细信息写入日志
-        addLog('error', formattedError.detail);
-        addLog('info', `用户提示：${formattedError.userMessage}`);
+        addLog('info', formattedError.detail);
+        addLog('error', `用户提示：${formattedError.userMessage}`);
         // 抛出自定义错误
         throw formattedError;
-        // if (error.message.includes('ERR_CONNECTION_TIMED_OUT')) {
-        //     crawlerState.error = {
-        //         type: 'PROXY_ERROR',
-        //         message: '连接谷歌学术超时！请检查网络',
-        //         detail: error.message
-        //     };
-        // } else if (error.message.includes('人机验证')) {
-        //     crawlerState.error = {
-        //         type: 'VERIFICATION_ERROR',
-        //         message: '检测到谷歌学术人机验证！请手动完成验证后重试',
-        //         detail: error.message
-        //     };
-        // } else if (error.message.includes('ERR_PROXY_CONNECTION_FAILED')) {
-        //     crawlerState.error = {
-        //         type: 'PROXY_CONNECT_ERROR',
-        //         message: '代理连接失败！请检查代理工具是否正常运行，或代理地址/端口是否正确',
-        //         detail: error.message
-        //     };
-        // } else {
-        //     crawlerState.error = {
-        //         type: 'UNKNOWN_ERROR',
-        //         message: `爬虫执行失败：${error.message}`,
-        //         detail: error.stack || error.message
-        //     };
-        // }
+
 
     } finally {
         // 清理工作（原样保留）
