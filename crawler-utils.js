@@ -145,7 +145,7 @@ function findLocalBrowser(log = console.log) {
             const items = fs.readdirSync(dir, {withFileTypes: true});
             for (const item of items) {
                 const fullPath = path.join(dir, item.name);
-                
+
                 // 如果是 .app 文件（macOS），获取其中的可执行文件
                 if (item.isDirectory() && item.name.toLowerCase().endsWith('.app')) {
                     if (isMacOSApp(fullPath)) {
@@ -272,7 +272,6 @@ async function ensureBrowser(log = console.log) {
     }
 }
 
-
 /**
  * 保存错误截图
  * @param {Page} page - Playwright 的 page 对象
@@ -312,17 +311,17 @@ function isMacOSApp(filePath) {
         if (!filePath.toLowerCase().endsWith('.app')) {
             return false;
         }
-        
+
         // 2. 检查是否是目录（.app 实际上是目录）
         const stats = fs.statSync(filePath);
         if (!stats.isDirectory()) {
             return false;
         }
-        
+
         // 3. 检查是否包含 Contents 目录（macOS .app 包的标志）
         const contentsPath = path.join(filePath, 'Contents');
         return fs.existsSync(contentsPath);
-        
+
     } catch (error) {
         console.error(`检查 .app 文件失败: ${error.message}`);
         return false;
@@ -339,28 +338,28 @@ function validateMacOSApp(appPath) {
         isValid: false,
         reasons: []
     };
-    
+
     try {
         // 检查扩展名
         if (!appPath.toLowerCase().endsWith('.app')) {
             result.reasons.push('文件扩展名不是 .app');
             return result;
         }
-        
+
         // 检查是否为目录
         const stats = fs.statSync(appPath);
         if (!stats.isDirectory()) {
             result.reasons.push('.app 必须是目录类型');
             return result;
         }
-        
+
         // 检查必需的结构
         const requiredPaths = [
             'Contents',
             'Contents/Info.plist',
             'Contents/MacOS'
         ];
-        
+
         for (const relativePath of requiredPaths) {
             const fullPath = path.join(appPath, relativePath);
             if (!fs.existsSync(fullPath)) {
@@ -368,13 +367,13 @@ function validateMacOSApp(appPath) {
                 return result;
             }
         }
-        
+
         result.isValid = true;
-        
+
     } catch (error) {
         result.reasons.push(`检查失败: ${error.message}`);
     }
-    
+
     return result;
 }
 
@@ -387,18 +386,18 @@ function getMacOSAppExecutable(appPath) {
     if (!isMacOSApp(appPath)) {
         return null;
     }
-    
+
     try {
         const macosDir = path.join(appPath, 'Contents', 'MacOS');
         if (!fs.existsSync(macosDir)) {
             return null;
         }
-        
+
         const files = fs.readdirSync(macosDir);
-        
+
         // 获取 .app 包的名称（不含 .app 后缀）
         const appName = path.basename(appPath, '.app');
-        
+
         // 优先查找与 .app 包名匹配的可执行文件
         for (const file of files) {
             const fullPath = path.join(macosDir, file);
@@ -407,7 +406,7 @@ function getMacOSAppExecutable(appPath) {
                 return fullPath;
             }
         }
-        
+
         // 如果没有找到完全匹配的，返回第一个可执行文件
         for (const file of files) {
             const fullPath = path.join(macosDir, file);
@@ -416,14 +415,50 @@ function getMacOSAppExecutable(appPath) {
                 return fullPath;
             }
         }
-        
+
         return null;
     } catch (error) {
         console.error(`获取 .app 可执行文件失败: ${error.message}`);
         return null;
     }
 }
-
+/**
+ * 递归检查目录是否为空
+ * @param {string} dirPath
+ * @returns {boolean}
+ */
+function isDirectoryEmpty(dirPath){
+    if (!fs.existsSync(dirPath)) return true;
+    const items = fs.readdirSync(dirPath);
+    for (const item of items){
+        const fullPath = path.join(dirPath,item);
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()){
+            if (!isDirectoryEmpty(fullPath)) return false;
+        }else {
+            // 非空
+            return false;
+        }
+    }
+    return true;
+}
+/**
+ * 清理空目录（递归删除所有空子目录后删除自身）
+ * @param {string} dirPath
+ */
+function cleanEmptyDirectory(dirPath){
+    if (!fs.existsSync(dirPath)) return;
+    if (isDirectoryEmpty(dirPath)){
+        try{
+            fs.rmSync(dirPath,{recursive:true,force:true});
+            console.log(`已删除空目录:${dirPath}`);
+        }catch (err){
+            console.warn(`删除空目录失败${err.message}`)
+        }
+    } else{
+        console.log(`目录非空，保留${dirPath}`);
+    }
+}
 module.exports = {
     pendingInterventions,
     setIo,
@@ -442,7 +477,8 @@ module.exports = {
     requestUserIntervention,
     isMacOSApp,
     validateMacOSApp,
-    getMacOSAppExecutable
+    getMacOSAppExecutable,
+    cleanEmptyDirectory
 };
 
 

@@ -10,7 +10,7 @@ const {
     humanType,
     randomDelay,
     formatDateTime,
-    ensureDir
+    ensureDir, cleanEmptyDirectory
 } = require('./crawler-utils');
 const {formatError} = require("./error-utils");
 const {takeErrorScreenshot,requestUserIntervention} = require("./crawler-utils");
@@ -749,7 +749,7 @@ function extractAuthorNamesFromInput(input) {
 
 //  主爬虫函数
 async function crawlGoogleScholarAuthors(input = [], options = {}) {
-    // 从 options 中获取任务类型（可选）
+    // 从 options 中获取任务类型
     console.log('启动谷歌学术作者信息检索');
     const authorNames = extractAuthorNamesFromInput(input);
     const generateExcel = options.generateExcel !== undefined ? options.generateExcel : true;
@@ -800,6 +800,9 @@ async function crawlGoogleScholarAuthors(input = [], options = {}) {
         // 写入 Excel
         if (generateExcel && authorResultList.length > 0) {
             writeToExcel(authorResultList, crawlerState.filePaths.resultExcel);
+        }else {
+            // 不生成 Excel 时，清空文件路径
+            crawlerState.filePaths.resultExcel = '';
         }
 
         addLog('success', `检索完成，共处理 ${authorResultList.length} 个作者`);
@@ -843,6 +846,8 @@ async function crawlGoogleScholarAuthors(input = [], options = {}) {
                 addLog('info', `清理临时目录失败: ${e.message}`);
             }
         }
+        // 清理空输出目录
+        cleanEmptyDirectory(currentOutputDir);
         crawlerState.isRunning = false;
         addLog('info', '\n=== 爬虫执行结束 ===');
     }

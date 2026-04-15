@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const excel = require('excel4node');
 let logStream = null; // 用于写入日志文件
-const {takeErrorScreenshot} = require("./crawler-utils");
+const {takeErrorScreenshot,cleanEmptyDirectory} = require("./crawler-utils");
 const {
     humanClick,
     humanType,
@@ -565,6 +565,7 @@ async function crawlScopus(keywords, callbacks = {}) {
                 addLog('✅ 爬取完成，未生成Excel文件');
             }
             crawlerState.result = results;
+            //  不生成 Excel 时，清空文件路径
             crawlerState.filePaths = generateExcel ? [filePath] : [];
         } else {
             addLog('⏹️ 爬虫已停止或未产生结果，未生成文件');
@@ -607,6 +608,8 @@ async function crawlScopus(keywords, callbacks = {}) {
                 addLog(`清理验证码目录失败: ${err.message}`);
             }
         }
+        // 清理空输出目录
+        cleanEmptyDirectory(currentOutputDir);
     }
 }
 

@@ -7,14 +7,12 @@ const path = require('path');
 let logStream = null;
 
 const {
-    humanClick,
-    humanType,
-    randomDelay,
     formatDateTime,
     ensureDir,
     findLocalBrowser,
     cleanupAllChromiumData,
-    ensureBrowser
+    ensureBrowser,
+    cleanEmptyDirectory
 } = require('./crawler-utils');
 const {
     academicCatLogin,
@@ -671,6 +669,8 @@ async function crawlWos(keywords, callbacks = {}) {
                 addLog(`清理验证码目录失败: ${err.message}`);
             }
         }
+        // 清理空输出目录
+        cleanEmptyDirectory(currentOutputDir);
     }
 }
 

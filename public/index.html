@@ -1189,7 +1189,7 @@
         if (taskType === 'SCOPUS_AUTHORS') {
             // 使用传进来的扁平化数据
             const list = flattenedData || [];
-            theadHtml = '<th>作者姓名</th><th>Scopus ID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th>';
+            theadHtml = '<tr><th>作者姓名</th><th>Scopus ID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th></tr>';
             list.slice(0, 10).forEach(item => {
                 tbodyHtml += `
                 <tr>
@@ -1208,7 +1208,7 @@
         } else if (taskType === 'WOS_AUTHORS') {
             // 使用传进来的扁平化数据
             const list = flattenedData || [];
-            theadHtml = '<th>作者姓名</th><th>Wos ResearchID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th>';
+            theadHtml = '<tr><th>作者姓名</th><th>Wos ResearchID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th></tr>';
             list.slice(0, 10).forEach(item => {
                 tbodyHtml += `
                 <tr>
@@ -1227,7 +1227,7 @@
 
         } else if (taskType && taskType.startsWith('GOOGLE') && taskType !== 'GOOGLE_SCHOLAR_AUTHORS') {
             const successList = resultData.successList || [];
-            theadHtml = '<th>ID</th><th>标题</th><th>作者</th><th>年份</th><th>引用数</th><th>引用文章数</th>';
+            theadHtml = '<tr><th>ID</th><th>标题</th><th>作者</th><th>年份</th><th>引用数</th><th>引用文章数</th></tr>';
             successList.slice(0, 10).forEach(item => {
                 tbodyHtml += `
                 <td>${escapeHtml(item.id || '-')}</td>

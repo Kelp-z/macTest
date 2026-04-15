@@ -9,7 +9,7 @@ const path = require('path');
 const os = require('os');
 let generateExcel= ''
 const errorUtils = require('./error-utils');
-const {takeErrorScreenshot,requestUserIntervention } = require("./crawler-utils");
+const {takeErrorScreenshot,requestUserIntervention,cleanEmptyDirectory } = require("./crawler-utils");
 const {
     humanClick,
     humanType,
@@ -1727,10 +1727,17 @@ async function processKeywords(page, searchKeywords, originalPapers = []) {
 
 // 最终处理
 async function finalizeResults() {
-    parseEndNoteFilesAndExportExcel(crawlerState.filePaths.endnoteDir);
+    // parseEndNoteFilesAndExportExcel(crawlerState.filePaths.endnoteDir);
     if (generateExcel) {
+        parseEndNoteFilesAndExportExcel(crawlerState.filePaths.endnoteDir);
         writeToExcel(successPaperList, crawlerState.filePaths.successExcel, "成功搜索结果");
         writeToExcel(failedPaperList, crawlerState.filePaths.failedExcel, "检索失败结果");
+    }else {
+        // 完全不生成任何 Excel 相关文件，也不解析 EndNote（避免产生空目录）
+        crawlerState.filePaths.successExcel = '';
+        crawlerState.filePaths.failedExcel = '';
+        crawlerState.filePaths.endnoteExcel = '';
+        crawlerState.filePaths.citingExcel = '';
     }
     crawlerState.progress = 100;
     crawlerState.result = {
@@ -1882,7 +1889,7 @@ async function crawlGoogleScholar(input = [], options = {}) {
         await finalizeResults();
 
         // 打印汇总信息并导出引用文章 Excel
-        printSummary(successPaperList);
+        // printSummary(successPaperList);
         exportCitingPapersToExcel(successPaperList);
         return crawlerState.result;
     } catch (error)  {
@@ -1906,7 +1913,7 @@ async function crawlGoogleScholar(input = [], options = {}) {
 
 
     } finally {
-        // 清理工作（原样保留）
+
         if (logStream) {
             logStream.end();
             logStream = null;
@@ -1927,6 +1934,8 @@ async function crawlGoogleScholar(input = [], options = {}) {
                 addLog('info', `清理临时目录失败: ${e.message}`);
             }
         }
+        // 清理空输出目录
+        cleanEmptyDirectory(currentOutputDir);
         crawlerState.isRunning = false;
         addLog('info', '\n=== 爬虫执行结束 ===');
     }

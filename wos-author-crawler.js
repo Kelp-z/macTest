@@ -6,7 +6,7 @@ const os = require('os');
 const {execSync} = require('child_process');
 const excel = require('excel4node');
 const {formatError} = require("./error-utils");
-const {requestUserIntervention} = require("./crawler-utils");
+const {requestUserIntervention, cleanEmptyDirectory} = require("./crawler-utils");
 const {takeErrorScreenshot} = require("./crawler-utils");
 //  配置读取
 const DEFAULT_CONFIG = {
@@ -132,7 +132,7 @@ function findLocalBrowser() {
             const items = fs.readdirSync(dir, {withFileTypes: true});
             for (const item of items) {
                 const fullPath = path.join(dir, item.name);
-                
+
                 // 如果是 .app 文件（macOS），获取其中的可执行文件
                 if (item.isDirectory() && item.name.toLowerCase().endsWith('.app')) {
                     if (isMacOSApp(fullPath)) {
@@ -1047,6 +1047,8 @@ async function crawlWosAuthors(authors, options = {}) {
             const excelFilePath = path.join(dataDir, excelFileName);
             writeToExcel(searchResults, excelFilePath);
             crawlerState.filePaths.resultExcel = excelFilePath;
+        }else {
+            crawlerState.filePaths.resultExcel = '';
         }
 
         crawlerState.result = searchResults;
@@ -1077,6 +1079,8 @@ async function crawlWosAuthors(authors, options = {}) {
         if (browser) await browser.close();
         if (logStream) logStream.end();
         browserInstance = null;
+        // 清理空输出目录
+        cleanEmptyDirectory(currentOutputDir);
         addLog('info', '爬虫执行结束');
     }
 }
