@@ -827,12 +827,18 @@
     let isTakingTask = false;
 
     let electronToken = null;
+    let backendToken = null;
 
     const originalFetch = window.fetch;
     window.fetch = function (url, options = {}) {
-        if (electronToken && (url.startsWith('/api/') || url.startsWith('http://localhost:3000/api/'))) {
+        if ((electronToken || backendToken) && (url.startsWith('/api/') || url.startsWith('http://localhost:3000/api/'))) {
             options.headers = options.headers || {};
-            options.headers['X-Electron-Token'] = electronToken;
+            if (electronToken) {
+                options.headers['X-Electron-Token'] = electronToken;
+            }
+            if (backendToken) {
+                options.headers['Authorization'] = 'Bearer ' + backendToken;
+            }
         }
         return originalFetch.call(this, url, options);
     };
@@ -2423,7 +2429,11 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 addLog('info', 'STOMP 库已加载，开始连接...');
 
                 // const socket = new SockJS(`http://localhost:8080/ws`);
-                const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
+                let wsUrl = `http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
+                if (backendToken) {
+                    wsUrl += `&token=${encodeURIComponent(backendToken)}`;
+                }
+                const socket = new SockJS(wsUrl);
                 stompClient = Stomp.over(socket);
 
                 stompClient.connect({}, function (frame) {
@@ -2575,6 +2585,9 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         };
         if (electronToken) {
             options.query.token = electronToken;
+        }
+        if (backendToken) {
+            options.query.token = backendToken;
         }
         socketIo = io(socketUrl, options);
 
@@ -2800,6 +2813,12 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             if (window.electronAPI && window.electronAPI.getElectronToken) {
                 electronToken = await window.electronAPI.getElectronToken();
                 addLog('info', '已获取 Electron Token');
+            }
+            backendToken = localStorage.getItem('token');
+            if (backendToken) {
+                addLog('info', '已获取后端登录 Token');
+            } else {
+                addLog('warn', '未找到后端登录 Token，请先登录');
             }
             const excelSwitch = document.getElementById('generateExcelCheckbox');
             const outputDirContainer = document.getElementById('outputDirContainer');
