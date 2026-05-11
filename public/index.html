@@ -479,15 +479,107 @@
         /*  验证码 / 手动模式区域  */
         .captcha-area,
         .manual-mode-area {
-            border: 1px solid #fed7aa;
-            background: #fffbeb;
-            padding: 20px 24px;
-            margin: 24px 0;
+            background: #ffffff;
             border-radius: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.02);
+            padding: 28px 32px;
+            margin-bottom: 28px;
+            border: 1px solid #eef2f8;
+            text-align: center;
+            position: relative;
+            transition: all 0.2s ease;
+        }
+
+        /* 手动模式专属配色 */
+        .manual-mode-area {
+            border-left: 5px solid #3b82f6;
+            background: linear-gradient(to right, #eff6ff, #ffffff);
         }
 
         .hidden {
-            display: none;
+            display: none !important;
+        }
+
+        /* 标题样式 */
+        .captcha-area h3,
+        .manual-mode-area h3 {
+            font-size: 20px;
+            font-weight: 600;
+            margin: 0 0 20px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            color: #1e293b;
+        }
+
+        .captcha-area {
+            border-left: 5px solid #f97316;
+            background: linear-gradient(to right, #fff7ed, #ffffff);
+        }
+
+        #captcha-image {
+            display: block;
+            max-width: 220px;
+            height: auto;
+        }
+
+        /* 输入框 + 按钮 统一行内布局 */
+        .captcha-controls,
+        .manual-controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        /* 验证码图片容器 */
+        .captcha-image-wrapper {
+            margin: 0 auto 20px;
+            display: inline-block;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e2e8f0;
+        }
+
+        /* 输入框样式 */
+        #captcha-input {
+            padding: 12px 16px;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            font-size: 16px;
+            width: 180px;
+            text-align: center;
+            letter-spacing: 1px;
+            transition: all 0.2s;
+        }
+
+        #captcha-input:focus {
+            outline: none;
+            border-color: #f97316;
+            box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.1);
+        }
+
+        /* 手动模式文字 */
+        .manual-mode-area p {
+            font-size: 15px;
+            color: #334155;
+            line-height: 1.6;
+            margin: 0 0 12px 0;
+        }
+
+        .manual-mode-area .small-text {
+            font-size: 13px;
+            color: #64748b;
+            margin-bottom: 24px;
+        }
+
+        /* 隐藏旧样式标记 */
+        .hidden {
+            display: none !important;
         }
 
         /* 辅助布局 */
@@ -615,6 +707,7 @@
             padding: 9px 18px;
             cursor: pointer;
         }
+
     </style>
 </head>
 <body>
@@ -628,7 +721,7 @@
             <div class="no-tasks">暂无待接取任务</div>
         </div>
     </div>
-    <label class="switch" >
+    <label class="switch">
         <input type="checkbox" id="autoTakeSwitch">
         <span class="slider"></span>
     </label>
@@ -639,7 +732,7 @@
         <!--        </label>-->
 
         <label class="switch">
-            <input type="checkbox" id="generateExcelCheckbox" >
+            <input type="checkbox" id="generateExcelCheckbox">
             <span class="slider"></span>
         </label>
         <span class="switch-label">📊 生成Excel文件</span>
@@ -739,9 +832,13 @@
     <!-- 验证码等待区域 -->
     <div id="captcha-area" class="captcha-area hidden">
         <h3>🔐 验证码输入</h3>
-        <img id="captcha-image" src="" alt="验证码" style="border:1px solid #999; max-width:200px;"><br>
-        <input type="text" id="captcha-input" placeholder="输入验证码">
-        <button onclick="submitCaptcha()" class="btn">提交</button>
+        <div class="captcha-image-wrapper">
+            <img id="captcha-image" src="" alt="验证码">
+        </div>
+        <div class="captcha-controls">
+            <input type="text" id="captcha-input" placeholder="请输入验证码" maxlength="10">
+            <button onclick="submitCaptcha()" class="btn">提交验证</button>
+        </div>
     </div>
 
     <!-- 手动选择页面提示区域 -->
@@ -749,7 +846,9 @@
         <h3>🖐️ 手动操作</h3>
         <p id="manual-mode-text">请手动在浏览器中打开一个可用的页面（例如点击任意镜像链接）。</p>
         <p class="small-text">若该时间段无可用站点，可停止检索，待合适时间重新启动检索任务。</p>
-        <button id="manualConfirmBtn" class="btn">✅ 我已打开页面，继续</button>
+        <div class="manual-controls">
+            <button id="manualConfirmBtn" class="btn">✅ 我已完成操作，继续执行</button>
+        </div>
     </div>
 
     <!-- 状态展示区域 -->
@@ -776,7 +875,7 @@
     <div class="logs-panel">
         <label>📋 执行日志：</label>
         <label class="switch">
-            <input type="checkbox" id="showAllLogsCheckbox" >
+            <input type="checkbox" id="showAllLogsCheckbox">
             <span class="slider"></span>
         </label>
         <span class="switch-label">详细调试模式</span>
@@ -827,12 +926,20 @@
     let isTakingTask = false;
 
     let electronToken = null;
+    let backendToken = null;
+    let captchaVisibleTimestamp = 0;  // 验证码最后显示时间戳
+    let captchaResolveForIntervention = null;  // user-intervention-require
 
     const originalFetch = window.fetch;
     window.fetch = function (url, options = {}) {
-        if (electronToken && (url.startsWith('/api/') || url.startsWith('http://localhost:3000/api/'))) {
+        if ((electronToken || backendToken) && (url.startsWith('/api/') || url.startsWith('http://localhost:3000/api/'))) {
             options.headers = options.headers || {};
+            if (electronToken) {
             options.headers['X-Electron-Token'] = electronToken;
+        }
+            if (backendToken) {
+                options.headers['Authorization'] = 'Bearer ' + backendToken;
+            }
         }
         return originalFetch.call(this, url, options);
     };
@@ -900,34 +1007,70 @@
     // 监听 Electron 主进程的退出请求
     if (window.electronAPI && window.electronAPI.onQuitRequest) {
         window.electronAPI.onQuitRequest(async () => {
-            addLog('info', '收到退出请求，正在通知后端...');
+            addLog('info', '应用即将退出，正在清理资源...');
 
-            // // 发送 STOMP 离线消息（如果已连接）
-            // if (stompClient && stompClient.connected) {
-            //     try {
-            //         stompClient.send('/app/Offline', {}, JSON.stringify({}));
-            //         addLog('info', '已发送离线状态消息');
-            //     } catch (err) {
-            //         addLog('error', '发送离线状态消息失败: ' + err.message);
-            //     }
-            // } else {
-            //     addLog('warn', 'STOMP未连接，无法发送离线状态');
-            // }
-            //
-            // // 使用 sendBeacon 发送退出信号
-            // const beaconData = JSON.stringify({ action: 'quit', timestamp: Date.now() });
-            // const beaconUrl = '/api/system/shutdown';
-            // const success = navigator.sendBeacon(beaconUrl, beaconData);
-            // if (success) {
-            //     addLog('success', '退出信号已通过 sendBeacon 发送');
-            // } else {
-            //     addLog('error', 'sendBeacon 发送失败');
-            // }
+            if (currentTask && apiMap[currentTask.type]) {
+                try {
+                    const apiInfo = apiMap[currentTask.type];
+                    await fetch(`${apiInfo.base}/crawl/stop`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Electron-Token': electronToken
+                        }
+                    });
+                    addLog('success', '已停止当前爬虫任务');
+                } catch (err) {
+                    addLog('error', `停止任务失败: ${err.message}`);
+                }
+
+                // 通过 STOMP 发送失败状态
+                // if (stompClient && stompClient.connected) {
+                //     const failedTask = {
+                //         id: currentTask.id,
+                //         type: currentTask.type,
+                //         status: "4",
+                //         terminalID: currentTask.terminalID || terminalMachineCode,
+                //         startDate: currentTask.startDate || formatDateTimeForBackend(new Date()),
+                //         endDate: formatDateTimeForBackend(new Date()),
+                //         createDate: currentTask.createDate,
+                //         assocID: currentTask.assocID,
+                //         failure: "应用被关闭，任务中断",
+                //         retryCount: currentTask.retryCount || 0,
+                //         requestData: currentTask.requestData,
+                //         failReasonURL: currentErrorScreenshotUrl || ''
+                //     };
+                //     try {
+                //         stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(failedTask));
+                //         addLog('info', '已发送任务失败状态到服务器');
+                //     } catch (err) {
+                //         addLog('error', `发送失败状态出错: ${err.message}`);
+                //     }
+                // }
+            }
+            // 发送系统关闭信号（使用 sendBeacon 确保发出）
+            const beaconUrl = '/api/system/shutdown';
+            const beaconData = JSON.stringify({
+                action: 'quit',
+                timestamp: Date.now(),
+                hasRunningTask: !!currentTask
+            });
+            navigator.sendBeacon(beaconUrl, beaconData);
+            addLog('info', '已发送退出信号');
+            // 清理本地存储
+            try {
+                clearAppState();
+                localStorage.removeItem(STORAGE_KEYS.LOGS);
+                sessionStorage.removeItem(STORAGE_KEYS.CAPTCHA);
+                addLog('info', '已清理本地存储');
+            } catch (err) {
+                addLog('error', `清理本地存储失败: ${err.message}`);
+            }
 
             // 等待一小段时间确保请求发出，然后通知主进程可以退出
             setTimeout(() => {
                 window.electronAPI.quitConfirmed();
-            }, 200);
+            }, 500);
         });
     }
     // 存储键名
@@ -962,30 +1105,77 @@
     }
 
     // 恢复应用状态
-    function restoreAppState() {
+    async function restoreAppState() {
         const savedState = localStorage.getItem(STORAGE_KEYS.APP_STATE);
         if (savedState) {
             try {
                 const state = JSON.parse(savedState);
                 if (state.currentTask) {
-                    currentTask = state.currentTask;
-                    // 恢复界面显示
-                    if (currentTask) {
-                        const apiInfo = apiMap[currentTask.type] || {name: currentTask.type};
-                        currentTaskTypeEl.textContent = apiInfo.name || currentTask.type;
+                    addLog('info', `检测到未完成任务 [ID: ${state.currentTask.id}]，正在验证后端状态...`);
+
+                    // 向后端查询真实状态
+                    const apiInfo = apiMap[state.currentTask.type];
+                    if (apiInfo){
+                        try {
+                            const response = await fetch(`${apiInfo.base}/crawl/status`,{
+                                headers: { 'X-Electron-Token': electronToken }
+                            });
+                            const result = await response.json();
+
+                            if (result.code === 200 && result.data){
+                                const backendState = result.data;
+                                if (!backendState.isRunning){
+                                    addLog('info',`后端显示任务已停止，清除本地缓存`);
+                                    clearAppState();
+                                    // 恢复 UI 为停止状态
+                                    progressTextEl.textContent = state.progressText || '0%';
+                                    progressBarEl.style.width = state.progressWidth || '0%';
+                                    successCountEl.textContent = state.successCount || '0';
+                                    failedCountEl.textContent = state.failedCount || '0';
+                                    resultExcelEl.textContent = state.resultExcel || '-';
+                                    errorMsgEl.textContent = state.errorMsg || '';
+
+                                    updateButtons(false);
+                                    statusTag.textContent = '已停止';
+                                    statusTag.className = 'tag tag-stopped';
+                                    currentTaskTypeEl.textContent = '-';
+
+                                    currentTask = null;
+                                    return false;
+                                }else {
+                                    // 后端仍在运行，恢复任务
+                                    addLog('success', `后端确认任务仍在运行，恢复监控`);
+                                    currentTask = state.currentTask;
+
+                                    // 恢复界面显示
+                                    const apiInfo = apiMap[currentTask.type] || {name: currentTask.type};
+                                    currentTaskTypeEl.textContent = apiInfo.name || currentTask.type;
+
+                                    // 恢复进度
+                                    progressTextEl.textContent = state.progressText || '0%';
+                                    progressBarEl.style.width = state.progressWidth || '0%';
+                                    successCountEl.textContent = state.successCount || '0';
+                                    failedCountEl.textContent = state.failedCount || '0';
+                                    resultExcelEl.textContent = state.resultExcel || '-';
+                                    errorMsgEl.textContent = state.errorMsg || '';
+
+                                    updateButtons(true);
+                                    statusTag.textContent = '运行中';
+                                    statusTag.className = 'tag tag-running';
+
+                                    // 启动轮询
+                                    startPolling();
+                                    return true;
+                                }
+                            }
+                        }catch (err){
+                            addLog('error', `查询后端状态失败: ${err.message}，清除本地缓存`);
+                            clearAppState();
+                            currentTask = null;
+                            updateButtons(false);
+                            return false;
+                        }
                     }
-                    // 恢复进度
-                    progressTextEl.textContent = state.progressText || '0%';
-                    progressBarEl.style.width = state.progressWidth || '0%';
-                    successCountEl.textContent = state.successCount || '0';
-                    failedCountEl.textContent = state.failedCount || '0';
-                    resultExcelEl.textContent = state.resultExcel || '-';
-                    errorMsgEl.textContent = state.errorMsg || '';
-                    // 如果当前任务存在，恢复按钮状态为运行中
-                    updateButtons(true);
-                    statusTag.textContent = '运行中';
-                    statusTag.className = 'tag tag-running';
-                    // 注意：轮询定时器需要在恢复后重新启动（见页面加载部分）
                 } else {
                     // 无任务，确保界面为停止状态
                     updateButtons(false);
@@ -1119,7 +1309,16 @@
 
     // HTML转义函数
     function escapeHtml(str) {
-        if (!str) return '';
+        // if (!str) return '';
+        // return str.replace(/[&<>]/g, function (m) {
+        //     if (m === '&') return '&amp;';
+        //     if (m === '<') return '&lt;';
+        //     if (m === '>') return '&gt;';
+        //     return m;
+        // });
+        if (str == null) return '';
+        // 非字符串类型转为字符串（数字、布尔值、对象等）
+        if (typeof str !== 'string') str = String(str);
         return str.replace(/[&<>]/g, function (m) {
             if (m === '&') return '&amp;';
             if (m === '<') return '&lt;';
@@ -1189,7 +1388,8 @@
         if (taskType === 'SCOPUS_AUTHORS') {
             // 使用传进来的扁平化数据
             const list = flattenedData || [];
-            theadHtml = '<tr><th>作者姓名</th><th>Scopus ID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th></tr>';
+            // theadHtml = '<tr><th>作者姓名</th><th>Scopus ID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th></tr>';
+            theadHtml = '<tr><th>作者姓名</th><th>Scopus ID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th></tr>';
             list.slice(0, 10).forEach(item => {
                 tbodyHtml += `
                 <tr>
@@ -1198,7 +1398,7 @@
                     <td>${escapeHtml(item.orcid)}</td>
                     <td>${escapeHtml(item.hIndex)}</td>
                     <td>${escapeHtml(item.institutionCountry)}</td>
-                    <td><a href="${escapeHtml(item.profileUrl)}" target="_blank">详情</a></td>
+<!--                    <td><a href="${escapeHtml(item.profileUrl)}" target="_blank">详情</a></td>-->
                 </tr>
             `;
             });
@@ -1208,7 +1408,8 @@
         } else if (taskType === 'WOS_AUTHORS') {
             // 使用传进来的扁平化数据
             const list = flattenedData || [];
-            theadHtml = '<tr><th>作者姓名</th><th>Wos ResearchID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th></tr>';
+            // theadHtml = '<tr><th>作者姓名</th><th>Wos ResearchID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th><th>个人档案链接</th></tr>';
+            theadHtml = '<tr><th>作者姓名</th><th>Wos ResearchID</th><th>ORCID</th><th>h-index</th><th>机构/国家</th></tr>';
             list.slice(0, 10).forEach(item => {
                 tbodyHtml += `
                 <tr>
@@ -1217,7 +1418,7 @@
                     <td>${escapeHtml(item.orcid)}</td>
                     <td>${escapeHtml(item.hIndex)}</td>
                     <td>${escapeHtml(item.institution)}</td>
-                    <td><a href="${escapeHtml(item.profileUrl)}" target="_blank">详情</a></td>
+<!--                    <td><a href="${escapeHtml(item.profileUrl)}" target="_blank">详情</a></td>-->
                 </tr>
             `;
             });
@@ -1226,22 +1427,36 @@
             return;
 
         } else if (taskType && taskType.startsWith('GOOGLE') && taskType !== 'GOOGLE_SCHOLAR_AUTHORS') {
+            // Google Scholar 论文检索结果
             const successList = resultData.successList || [];
-            theadHtml = '<tr><th>ID</th><th>标题</th><th>作者</th><th>年份</th><th>引用数</th><th>引用文章数</th></tr>';
-            successList.slice(0, 10).forEach(item => {
-                tbodyHtml += `
-                <td>${escapeHtml(item.id || '-')}</td>
-                <td>${escapeHtml(item.title || '-')}</td>
-                <td>${escapeHtml(item.authors || '-')}</td>
-                <td>${escapeHtml(item.year || '-')}</td>
-                <td>${escapeHtml(item.citations || '-')}</td>
-                <td>${(item.citingPapers || []).length}</td>
-            `;
-            });
+            theadHtml = '<tr><th>标题</th><th>作者</th><th>期刊</th><th>年份</th><th>引用数</th><th>摘要</th></tr>';
+
+            if (successList.length === 0) {
+                tbodyHtml = '<tr><td colspan="6" style="text-align: center; color: #999;">暂无数据</td></tr>';
+            } else {
+                successList.slice(0, 10).forEach(item => {
+                    tbodyHtml += `                    <tr>
+                        <td title="${escapeHtml(item.title || '')}">${escapeHtml((item.title || '-').substring(0, 50))}${(item.title || '').length > 50 ? '...' : ''}</td>
+                        <td>${escapeHtml(item.authors || '-')}</td>
+                        <td>${escapeHtml(item.journal || '-')}</td>
+                        <td>${escapeHtml(item.year || '-')}</td>
+                        <td>${escapeHtml(item.citations || '0')}</td>
+                        <td title="${escapeHtml(item.abstract || '')}">${escapeHtml((item.abstract || '-').substring(0, 30))}${(item.abstract || '').length > 30 ? '...' : ''}</td>
+                    </tr>
+                `;
+                });
+            }
         }
         // Scopus结果
         else if (taskType === 'SCOPUS_INCLUSION') {
-            const list = Array.isArray(resultData) ? resultData : [];
+            let list;
+            if (resultData.successList && Array.isArray(resultData.successList)) {
+                // 有 successList/failedList
+                list = resultData.successList.concat(resultData.failedList || []);
+            } else {
+                // 直接是数组
+                list = Array.isArray(resultData) ? resultData : [];
+            }
             theadHtml = '<tr><th>EID</th><th>标题</th><th>收录状态</th><th>DOI</th><th>出版时间</th><th>检索时间</th></tr>';
             list.slice(0, 10).forEach(item => {
                 tbodyHtml += `<tr>
@@ -1268,9 +1483,9 @@
                 </tr>`;
             });
         } else if (taskType === 'GOOGLE_SCHOLAR_AUTHORS') {
-            const list = Array.isArray(resultData) ? resultData : [];
-            theadHtml = '<th>作者姓名</th><th>总计h指数</th><th>近期h指数</th><th>机构名称</th><th>电子邮件验证</th><th>作者档案链接</th>';
-            list.slice(0, 10).forEach(item => {
+            const successList = resultData.successList || (Array.isArray(resultData) ? resultData : []);
+            theadHtml = '<tr><th>作者姓名</th><th>总计h指数</th><th>近期h指数</th><th>机构名称</th><th>电子邮件验证</th><th>作者档案链接</th></tr>';
+            successList.slice(0, 10).forEach(item => {
                 tbodyHtml += `
                 <tr>
                     <td>${escapeHtml(item.authorName || '-')}</td>
@@ -1386,7 +1601,36 @@
 
         // 更新按钮状态
         updateButtons(isRunning);
-
+        // 如果任务未运行（停止），强制隐藏手动模式和验证码区域
+        if (!isRunning) {
+            if (!manualArea.classList.contains('hidden')) {
+                manualArea.classList.add('hidden');
+                if (manualModeTimer) {
+                    clearTimeout(manualModeTimer);
+                    manualModeTimer = null;
+                }
+            }
+            if (!captchaArea.classList.contains('hidden')) {
+                captchaArea.classList.add('hidden');
+                // 清空验证码相关状态
+                captchaInput.value = '';
+                if (captchaResolveForIntervention) {
+                    captchaResolveForIntervention = null;
+                }
+                clearCaptchaState();
+            }
+        }
+        // 处理验证码显示
+        if (waitingForCaptcha && data.captchaId && data.captchaImagePath) {
+            currentCaptchaId = data.captchaId;
+            captchaImage.src = data.captchaImagePath;
+            captchaArea.classList.remove('hidden');
+        } else {
+            // 如果当前正有 user-intervention 验证码等待，不要隐藏
+            if (!captchaResolveForIntervention && !currentCaptchaId) {
+                captchaArea.classList.add('hidden');
+            }
+        }
         // 更新错误信息
         if (error) {
             // 记录详细错误到日志
@@ -1432,7 +1676,8 @@
             currentTaskTypeEl.textContent = '-';
         }
 
-        console.log("结果数据：" + result)
+        console.log("结果数据：", result);
+
         // 处理结果统计
         if (result) {
             let successCount = 0, failedCount = 0;
@@ -1453,9 +1698,13 @@
                 successCount = result.successCount || 0;
                 failedCount = result.failedCount || 0;
             } else if (currentTask && currentTask.type === 'GOOGLE_SCHOLAR_AUTHORS') {
-                const list = Array.isArray(result) ? result : [];
-                successCount = list.length;
-                failedCount = 0;
+                const successList = result.successList || [];
+                successCount = result.successCount || successList.length;
+                failedCount = result.failedCount || 0;
+            } else if (result.successCount !== undefined && result.failedCount !== undefined) {
+                // { successCount, failedCount, successList, failedList }
+                successCount = result.successCount;
+                failedCount = result.failedCount;
             } else {
                 const list = Array.isArray(result) ? result : [];
                 successCount = list.filter(item => item.isRecruit === 'true').length;
@@ -1469,24 +1718,28 @@
             if (currentTask) {
                 updateResultTableByType(currentTask.type, result, flattenedData);
             }
-        }
-
-        // 更新文件路径
-        if (filePaths) {
-            if (typeof filePaths === 'string') {
-                resultExcelEl.textContent = filePaths;
-            } else if (Array.isArray(filePaths) && filePaths.length > 0) {
-                resultExcelEl.textContent = filePaths[0];
-            } else if (filePaths.resultExcel) {          // 作者检索使用的字段
-                resultExcelEl.textContent = filePaths.resultExcel;
-            } else if (filePaths.successExcel) {         // 保留兼容旧格式
-                resultExcelEl.textContent = filePaths.successExcel;
+            // 更新文件路径
+            const filePaths = result.filePaths;
+            if (filePaths) {
+                if (typeof filePaths === 'string') {
+                    resultExcelEl.textContent = filePaths;
+                } else if (Array.isArray(filePaths) && filePaths.length > 0) {
+                    resultExcelEl.textContent = filePaths[0];
+                } else if (filePaths.resultExcel) {
+                    resultExcelEl.textContent = filePaths.resultExcel;
+                } else if (filePaths.successExcel) {
+                    resultExcelEl.textContent = filePaths.successExcel;
+                } else {
+                    resultExcelEl.textContent = '-';
+                }
             } else {
                 resultExcelEl.textContent = '-';
             }
         } else {
             resultExcelEl.textContent = '-';
         }
+
+
         console.log()
         // 处理验证码显示
         if (waitingForCaptcha && data.captchaId && data.captchaImagePath) {
@@ -1528,41 +1781,110 @@
         }
     }
 
-    // 处理wos作者结果
+    // 处理 WoS 作者结果
     function processWosAuthorsResult(resultData) {
-        if (!Array.isArray(resultData)) return {flattened: [], successCount: 0, failedCount: 0};
-        const flattened = [];
-        let successCount = 0, failedCount = 0;
-        for (const searchResult of resultData) {
-            const authors = searchResult.authors || [];
-            for (const author of authors) {
-                if (author.authorName && author.authorName !== '-') {
-                    successCount++;
-                } else {
-                    failedCount++;
-                }
-                flattened.push({
-                    authorName: author.authorName || '-',
-                    wosResearchId:author.researcherId ||'',
-                    orcid: author.orcid || '-',
-                    hIndex: author.hIndex || '-',
-                    institution: author.institution || '-',
-                    location:author.location || '-',
-                    profileUrl: author.authorUrl ||'-'
-                })
+        if (!resultData || typeof resultData !== 'object') {
+            console.warn('[WOS] resultData 无效:', resultData);
+            return {flattened: [], successCount: 0, failedCount: 0};
+        }
+
+        let resultArray;
+        let failedList = [];
+        if (Array.isArray(resultData)) {
+            resultArray = resultData;
+        } else {
+            resultArray = resultData.successList;
+            failedList = resultData.failedList || [];
+
+            if (!resultArray || !Array.isArray(resultArray)) {
+                console.warn('[WOS] successList 无效:', resultArray);
+                return {flattened: [], successCount: 0, failedCount: 0};
             }
         }
+        const flattened = [];
+        let successCount = 0, failedCount = 0;
+        for (const searchResult of resultArray) {
+            const authors = searchResult.authors || [];
+
+            if (authors.length > 0) {
+                // 有结果的记录
+                for (const author of authors) {
+                    if (author.authorName && author.authorName !== '-') {
+                        successCount++;
+                    } else {
+                        failedCount++;
+                    }
+                    flattened.push({
+                        authorName: author.authorName || '-',
+                        wosResearchId: author.researcherId || '',
+                        orcid: author.orcid || '-',
+                        hIndex: author.hIndex || '-',
+                        institution: author.institution || '-',
+                        location: author.location || '-',
+                        profileUrl: author.authorUrl || '-'
+                    });
+                }
+            } else {
+                // 没有结果的记录（失败或无数据）
+                failedCount++;
+                flattened.push({
+                    authorName: `${searchResult.familyName || ''} ${searchResult.givenName || ''}`.trim() || '-',
+                    wosResearchId: '-',
+                    orcid: '-',
+                    hIndex: '-',
+                    institution: '-',
+                    location: '-',
+                    profileUrl: '-',
+                    remark: searchResult.remark || '无结果'
+                });
+            }
+        }
+
+        // 统计 failedList 中的记录
+        if (failedList && Array.isArray(failedList)) {
+            failedCount += failedList.length;
+            for (const failedItem of failedList) {
+                flattened.push({
+                    authorName: `${failedItem.familyName || ''} ${failedItem.givenName || ''}`.trim() || '-',
+                    wosResearchId: '-',
+                    orcid: '-',
+                    hIndex: '-',
+                    institution: '-',
+                    location: '-',
+                    profileUrl: '-',
+                    remark: failedItem.remark || '检索失败'
+                });
+            }
+        }
+
         return {flattened, successCount, failedCount};
     }
 
     // 处理 Scopus 作者结果，返回扁平化的作者列表和统计信息
     function processScopusAuthorsResult(resultData) {
-        if (!Array.isArray(resultData)) return {flattened: [], successCount: 0, failedCount: 0};
+        if (!resultData || typeof resultData !== 'object') {
+            console.warn('[SCOPUS] resultData 无效:', resultData);
+            return {flattened: [], successCount: 0, failedCount: 0};
+        }
 
+        let resultArray;
+        if (resultData && typeof resultData === 'object' && !Array.isArray(resultData)) {
+            // 对象格式：{ successList: [...], failedList: [], ... }
+            resultArray = resultData.successList || [];
+            if (!resultArray || !Array.isArray(resultArray)) {
+                console.warn('[SCOPUS] successList 无效:', resultArray);
+                return {flattened: [], successCount: 0, failedCount: 0};
+            }
+        } else if (Array.isArray(resultData)) {
+            // 数组格式
+            resultArray = resultData;
+        } else {
+            return {flattened: [], successCount: 0, failedCount: 0};
+        }
         const flattened = [];
         let successCount = 0, failedCount = 0;
 
-        for (const searchResult of resultData) {
+        for (const searchResult of resultArray) {
             const authors = searchResult.authors || [];
             for (const author of authors) {
                 const details = author.details;
@@ -1684,7 +2006,7 @@
         }
 
         const baseUrl = apiInfo.base;
-        addLog('info', `准备启动 ${apiInfo.name || task.type} 检索，后端接口: ${baseUrl}/crawl/start`);
+        addLog('info', `准备启动 ${apiInfo.name || task.type} 检索`);
 
         const requestBody = {generateExcel};
 
@@ -1916,16 +2238,21 @@
         }
 
         isPolling = true;
+        const taskType = currentTask.type;
+        const taskId = currentTask.id;
+
         pollTimer = setInterval(async () => {
-            if (!currentTask) {
+            // 清除轮询
+            if (!currentTask || !isPolling) {
                 clearInterval(pollTimer);
                 pollTimer = null;
+                isPolling = false;
                 return;
             }
 
-            const apiInfo = apiMap[currentTask.type];
+            const apiInfo = apiMap[taskType];
             if (!apiInfo) {
-                addLog('error', `未知的任务类型，无法轮询状态: ${currentTask.type}`);
+                addLog('error', `未知的任务类型，无法轮询状态: ${taskType}`);
                 clearInterval(pollTimer);
                 pollTimer = null;
                 return;
@@ -1944,12 +2271,13 @@
 
                     // 只要后端返回 isRunning = false，就认为任务已完成
                     if (!res.data.isRunning) {
-                        addLog('info', `任务 ${currentTask.id} 已完成...`);
+
+                        addLog('info', `任务 ${taskId} 已完成...`);
 
                         // 构造完成/失败状态
                         const completedTask = {
-                            id: currentTask.id,
-                            type: currentTask.type,
+                            id: taskId,
+                            type: taskType,
                             status: res.data.error ? "4" : "3",
                             terminalID: currentTask.terminalID || "",
                             startDate: currentTask.startDate || formatDateTimeForBackend(new Date()),
@@ -1964,23 +2292,32 @@
                         };
 
                         // 如果是手动任务（id以'manual_'开头），则不发送状态
-                        const isManualTask = currentTask.id && currentTask.id.toString().startsWith('manual_');
+                        const isManualTask = taskId && taskId.toString().startsWith('manual_');
                         if (!isManualTask && stompClient && stompClient.connected) {
                             stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(completedTask));
-                            addLog('success', `已发送任务完成状态 [ID: ${currentTask.id}]`);
+                            addLog('success', `已发送任务完成状态 [ID: ${taskId}]`);
                         } else if (isManualTask) {
-                            addLog('info', `手动任务 [ID: ${currentTask.id}] 完成，不发送状态`);
+                            addLog('info', `手动任务 [ID: ${taskId}] 完成，不发送状态`);
                         } else {
                             addLog('warn', 'STOMP未连接，无法发送状态');
                         }
 
 
-                        // 清理任务和轮询
+                        // 清理任务
                         currentTask = null;
-                        clearInterval(pollTimer);
-                        pollTimer = null;
+                        manualArea.classList.add('hidden');
+                        if (manualModeTimer) {
+                            clearTimeout(manualModeTimer);
+                            manualModeTimer = null;
+                        }
+                        captchaArea.classList.add('hidden');
+                        captchaInput.value = '';
+                        if (captchaResolveForIntervention) {
+                            captchaResolveForIntervention = null;
+                        }
+                        clearCaptchaState();
 
-                        checkAndTakeNextTask();
+                        await checkAndTakeNextTask();
                     }
                 }
             } catch (err) {
@@ -2132,6 +2469,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         let requestData; // 要发送给后端的数据（根据任务类型决定是 keywords 还是 authors）
 
         try {
+
             // 解析输入
             const parsed = parseInputForType(selectedType, rawContent, isJsonMode);
             requestData = parsed;
@@ -2164,7 +2502,6 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
 
     // 停止按钮
     stopBtn.addEventListener('click', async () => {
-
 
         if (!currentTask) {
             addLog('warn', '没有正在进行的任务');
@@ -2211,8 +2548,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         try {
             addLog('warn', '正在停止检索任务...');
             const res = await apiRequest(`${apiInfo.base}/crawl/stop`, 'POST');
-            addLog('info', res.msg );
-            addLog('success',  '检索任务已停止');
+            addLog('info', res.msg);
+            addLog('success', '检索任务已停止');
 
 
             // 发送任务失败状态（仅当不是手动任务时）
@@ -2263,6 +2600,26 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         if (!confirm('确定要重置爬虫状态吗？所有数据将被清空。')) return;
 
         try {
+            addLog('info', '正在重置所有爬虫状态...');
+            // 重置所有爬虫的状态
+            const crawlerBases = [
+                '/api/google/crawl',
+                '/api/google/author/crawl',
+                '/api/scopus/crawl',
+                '/api/scopus/author/crawl',
+                '/api/wos/crawl',
+                '/api/wos/author/crawl'
+            ];
+
+            for (const basePath of crawlerBases) {
+                try {
+                    await apiRequest(`${basePath}/reset`, 'POST');
+                    addLog('success', `${basePath} 状态已重置`);
+                } catch (err) {
+                    addLog('warn', `${basePath} 重置失败: ${err.message}`);
+                }
+            }
+
             if (pollTimer) {
                 clearInterval(pollTimer);
                 pollTimer = null;
@@ -2285,6 +2642,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             resultExcelEl.textContent = '-';
             resultTableHead.innerHTML = '';
             resultTableBody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #999;">暂无数据</td></tr>';
+
+            clearAppState();
             updateButtons(false);
 
             addLog('success', '状态已重置');
@@ -2296,18 +2655,27 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
     // 提交验证码
     window.submitCaptcha = async function () {
         const code = captchaInput.value.trim();
-        if (!code || !currentCaptchaId) return;
 
-        if (!currentTask) {
-            alert('没有正在进行的任务');
+        if (!code) {
+            alert('请输入验证码');
+            return;
+        }
+        // 如果存在 user-intervention 等待，直接 resolve Promise（由事件处理器提交）
+        if (captchaResolveForIntervention && currentCaptchaId) {
+            captchaArea.classList.add('hidden');
+            captchaInput.value = '';
+            captchaResolveForIntervention(code);
+            captchaResolveForIntervention = null;
+            currentCaptchaId = null;
+            captchaVisibleTimestamp = 0;
+            clearCaptchaState();
             return;
         }
 
+        // 老旧机制（captcha-required 事件）的提交
+        // if (!currentCaptchaId || !currentTask) return;
         const apiInfo = apiMap[currentTask.type];
-        if (!apiInfo) {
-            alert('未知的任务类型');
-            return;
-        }
+        if (!apiInfo) return;
 
         try {
             const res = await apiRequest(`${apiInfo.base}/captcha/submit`, 'POST', {
@@ -2327,10 +2695,18 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         } catch (err) {
             alert(`提交失败: ${err.message}`);
         }
-    };
+        ;
+    }
 
     // 手动模式确认
     manualConfirmBtn.addEventListener('click', async () => {
+        // 检查是否有等待的 resolve
+        if (window._manualResolveForIntervention) {
+            window._manualResolveForIntervention();
+            window._manualResolveForIntervention = null;
+            // 区域隐藏、超时清理等由 case 'manual' 中的后续代码处理
+            return;
+        }
         if (!currentTask) {
             alert('没有正在进行的任务');
             return;
@@ -2342,21 +2718,21 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             return;
         }
 
-        try {
-            const res = await apiRequest(`${apiInfo.base}/crawl/manual-confirm`, 'POST');
-            if (res.code === 200) {
-                manualArea.classList.add('hidden');
-                if (manualModeTimer) {
-                    clearTimeout(manualModeTimer);
-                    manualModeTimer = null;
-                }
-                addLog('success', '已确认手动操作，继续执行');
-            } else {
-                alert(res.msg);
-            }
-        } catch (err) {
-            alert('确认失败: ' + err.message);
-        }
+        // try {
+        //     const res = await apiRequest(`${apiInfo.base}/crawl/manual-confirm`, 'POST');
+        //     if (res.code === 200) {
+        //         manualArea.classList.add('hidden');
+        //         if (manualModeTimer) {
+        //             clearTimeout(manualModeTimer);
+        //             manualModeTimer = null;
+        //         }
+        //         addLog('success', '已确认手动操作，继续执行');
+        //     } else {
+        //         alert(res.msg);
+        //     }
+        // } catch (err) {
+        //     alert('确认失败: ' + err.message);
+        // }
     });
 
     // STOMP 连接（Spring Boot 任务接收）
@@ -2426,6 +2802,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
                 stompClient = Stomp.over(socket);
 
+                const token = localStorage.getItem('token'); // 从 localStorage 获取 token
+
                 stompClient.connect({}, function (frame) {
                     addLog('success', 'STOMP已连接：' + frame);
                     stompClient.subscribe('/topic/messages', function (response) {
@@ -2454,7 +2832,14 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                             addLog('error', `解析任务数据失败：${e.message}`);
                         }
                     });
-                    stompClient.send('/app/Online', {}, JSON.stringify({}));
+                    // 连接成功后，发送 Online 消息并携带额外数据
+                    stompClient.send('/app/Online', {}, JSON.stringify({
+                        terminalId: terminalMachineCode,
+                        token: token,
+                        clientType: 'electron',
+                        timestamp: Date.now()
+                    }));
+
                     // 订阅终止任务队列
                     stompClient.subscribe('/user/queue/terminate', function (message) {
                         try {
@@ -2481,6 +2866,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         };
         tryConnect();
     }
+
     // 处理终止任务（任务长时间未处理完成被引擎判断为超时）
     async function handleTerminateTask(task) {
         const taskId = task.id;
@@ -2551,6 +2937,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             addLog('info', `终止任务 ${taskId} 不在执行中，已从待接取列表移除${wasInPending ? '' : '（原列表中不存在）'}`);
         }
     }
+
     // Socket.io 连接（用于验证码和手动模式）
     function connectSocketIo() {
         // socketIo = io('http://localhost:3000', {
@@ -2570,7 +2957,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             reconnectionDelayMax: 5000,
             timeout: 20000,
             pingInterval: 25000,   // 每25秒发送心跳
-            pingTimeout: 120000,      // 60秒未收到心跳则断开
+            pingTimeout: 300000,      // 5min未收到心跳则断开
             query: {}
         };
         if (electronToken) {
@@ -2604,125 +2991,291 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         });
 
 
-        socketIo.on('manual-login-required', (data) => {
-            addLog('warn', '检测到 WoS 作者检索需要手动登录，请在弹出的对话框中确认');
-            // 使用 Electron 原生对话框
-            if (window.electronAPI && window.electronAPI.showMessageBox) {
-                window.electronAPI.showMessageBox({
-                    type: 'info',
-                    title: '手动登录提示',
-                    message: '请在谷歌浏览器窗口中手动输入账号密码并点击登录',
-                    detail: '登录完成后爬虫将自动继续，请勿关闭浏览器窗口。',
-                    buttons: ['我知道了']
-                });
-            } else {
-                alert('请在弹出的浏览器窗口中手动登录 Web of Science');
-            }
-        });
-        socketIo.on('captcha-required', async (data) => {
-            addLog('info', '收到学术猫验证码请求: ' + JSON.stringify(data));
-            // 如果已有显示，先清空
-            if (!captchaArea.classList.contains('hidden')) {
-                // 提示用户验证码已刷新
-                addLog('info', '验证码已刷新，请重新输入');
-                if (window.electronAPI && window.electronAPI.showMessageBox) {
-                    await window.electronAPI.showMessageBox({
-                        type: 'info',
-                        title: '验证码已刷新，请重新输入',
-                        message: '请输入验证码',
-                        detail: '请在界面输入框中填写验证码后点击“提交”',
-                        buttons: ['我知道了']
+        // socketIo.on('manual-login-required', (data) => {
+        //     addLog('warn', '检测到 WoS 作者检索需要手动登录，请在弹出的对话框中确认');
+        //     // 使用 Electron 原生对话框
+        //     if (window.electronAPI && window.electronAPI.showMessageBox) {
+        //         window.electronAPI.showMessageBox({
+        //             type: 'info',
+        //             title: '手动登录提示123',
+        //             message: '请在谷歌浏览器窗口中手动输入账号密码并点击登录',
+        //             detail: '登录完成后爬虫将自动继续，请勿关闭浏览器窗口。',
+        //             buttons: ['我知道了']
+        //         });
+        //     } else {
+        //         alert('请在弹出的浏览器窗口中手动登录 Web of Science');
+        //     }
+        // });
+
+        socketIo.on('user-intervention-required', async (data) => {
+            const {id, type, data: interventionData} = data;
+            const source = data.source;      // 保存 source，后续提交用
+            let result = null;
+            switch (type) {
+                case 'captcha-manual':
+                    addLog('warn', interventionData.message || '检测到人机验证')
+                    if (interventionData.instruction) {
+                        addLog('info', interventionData.instruction);
+                    }
+
+                    // 使用 Electron 原生对话框提醒用户
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'warning',
+                            title: '人机验证提醒',
+                            message: interventionData.message || '请在弹出的浏览器窗口中完成人机验证',
+                            detail: interventionData.instruction || '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        // 降级为 alert
+                        alert(interventionData.message || '请完成人机验证');
+                    }
+
+                    result = 'notified'
+                    break;
+                case 'manual-login':
+                    addLog('warn', interventionData.message || '需要手动登录');
+                    if (interventionData.instruction) {
+                        addLog('info', interventionData.instruction);
+                    }
+
+                    // 使用 Electron 原生对话框
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'info',
+                            title: '手动登录提示',
+                            message: interventionData.message || '请在弹出的浏览器窗口中手动登录',
+                            detail: interventionData.instruction || '登录完成后爬虫将自动继续',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        // 降级为 alert
+                        alert(interventionData.message || '请手动登录');
+                    }
+
+                    // 这里不提交结果，后端会通过 URL 变化自动检测
+                    result = 'notified';
+                    break;
+
+                // 处理通用手动操作提示
+                case 'manual':
+                    // 显示手动模式区域
+                    manualModeText.textContent = interventionData.message || '请手动在浏览器中完成操作，然后点击确认按钮';
+                    manualArea.classList.remove('hidden');
+                    if (manualModeTimer) clearTimeout(manualModeTimer);
+                    manualModeTimer = setTimeout(() => {
+                        if (!manualArea.classList.contains('hidden')) {
+                            alert('手动操作超时（60秒），若无可用的页面，可点击停止按钮结束任务。');
+                        }
+                        manualModeTimer = null;
+                    }, 60000);
+
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'info',
+                            title: '手动操作提示',
+                            message: interventionData.message || '请手动完成操作',
+                            detail: interventionData.instruction || '',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        alert(interventionData.message || '请手动完成操作');
+                    }
+
+                    // 等待用户点击"确认"按钮
+                    // 创建一个 Promise
+                    result = await new Promise((resolve) => {
+                        // 将 resolve 存入临时变量，在 manualConfirmBtn 点击时调用
+                        window._manualResolveForIntervention = () => {
+                            resolve('confirmed');
+                        };
                     });
-                } else {
-                    // 降级为 alert
-                    alert('验证码已刷新，请重新输入');
-                }
-            }
-            currentCaptchaId = data.captchaId;
-            captchaImage.src = data.imageUrl;
-            captchaArea.classList.remove('hidden');
-            captchaInput.value = ''; // 清空输入框
-            saveCaptchaState(data.captchaId, data.imageUrl, data.type);
 
-            // 调用 Electron 原生弹窗（自带系统声音）
-            if (window.electronAPI && window.electronAPI.showMessageBox) {
-                await window.electronAPI.showMessageBox({
-                    type: 'info',
-                    title: '验证码',
-                    message: '请输入验证码',
-                    detail: '请在界面输入框中填写验证码后点击“提交”',
-                    buttons: ['我知道了']
-                });
-            } else {
-                // 降级为 alert
-                alert('请输入验证码');
-            }
+                    // 提交手动确认到后端
+                    try {
+                        const response = await fetch('/api/user-intervention/complete', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ result, type, source })   // 不传 id
+                        });
+                        if (!response.ok) {
+                            const err = await response.json();
+                            throw new Error(err.msg || '提交失败');
+                        }
+                        addLog('success', '手动操作已确认');
+                    } catch (e) {
+                        addLog('error', `提交手动操作确认失败: ${e.message}`);
+                    }
+                    // 清理
+                    manualArea.classList.add('hidden');
+                    if (manualModeTimer) {
+                        clearTimeout(manualModeTimer);
+                        manualModeTimer = null;
+                    }
+                    result = 'confirmed';  // 提交给后端
+                    break;
+                case 'captcha':
+                    captchaResolveForIntervention = null; // 清空旧的
+                    if (window._captchaHideTimer) {
+                        clearTimeout(window._captchaHideTimer);
+                        window._captchaHideTimer = null;
+                    }
+                    captchaVisibleTimestamp = Date.now();
 
-            // 播放自定义音效
-            // try {
-            //     // 在 Electron 中，Audio 可以使用本地路径，但需要处理打包后的资源
-            //     const audio = new Audio('./assets/beep.mp3'); // 确保文件存在
-            //     await audio.play();
-            // } catch (e) {
-            //     console.log('播放自定义音效失败', e);
+                    const fullUrl = interventionData.imageUrl;
+                    captchaImage.src = fullUrl;
+                    captchaArea.classList.remove('hidden');
+                    captchaInput.value = '';
+                    currentCaptchaId = id;
+                    saveCaptchaState(id, fullUrl, 'captcha');
+
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'info',
+                            title: '验证码',
+                            message: '请输入验证码',
+                            detail: '请在界面输入框中填写验证码后点击"提交"',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        alert('请输入验证码');
+                    }
+                    // 等待用户输入验证码
+                    let code;
+                    try {
+                        code = await new Promise((resolve, reject) => {
+                            captchaResolveForIntervention = (c) => resolve(c);
+                            setTimeout(() => {
+                                if (captchaResolveForIntervention) {
+                                    captchaResolveForIntervention = null;
+                                    reject(new Error('验证码等待超时'));
+                                }
+                            }, 300000);
+                        });
+                    } catch (e) {
+                        addLog('error', `等待验证码失败: ${e.message}`);
+                        // 验证码超时或取消，不做任何提交，直接返回
+                        result = 'timeout';
+                        break;
+                    }
+
+                    // 提交验证码到后端
+                    try {
+                        const response = await fetch('/api/user-intervention/complete', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id, result: code, type: 'captcha', source })
+                        });
+                        if (!response.ok) {
+                            const err = await response.json();
+                            throw new Error(err.msg || '提交失败');
+                        }
+                        addLog('success', '验证码已提交');
+                        // 提交成功后隐藏验证码区域
+                        captchaArea.classList.add('hidden');
+                        captchaInput.value = '';
+                        currentCaptchaId = null;
+                        captchaVisibleTimestamp = 0;
+                        clearCaptchaState();
+                    } catch (e) {
+                        addLog('error', `提交验证码失败: ${e.message}`);
+                    }
+
+                    // 设置为 null，让外层的统一提交跳过
+                    result = null;
+                    break;
+                default:
+                    addLog('warn', `未知的干预类型: ${type}`);
+                    return;
+            }
+            //只有当 result 不为 'notified'  时才提交结果
+            // if (result !== 'notified') {
+            //     try {
+            //         const response = await fetch('/api/user-intervention/complete', {
+            //             method: 'POST',
+            //             headers: { 'Content-Type': 'application/json' },
+            //             body: JSON.stringify({ id, result, type, source })
+            //         });
+            //         if (!response.ok) {
+            //             const err = await response.json();
+            //             throw new Error(err.msg || '提交失败');
+            //         }
+            //         if (type === 'captcha') {
+            //             addLog('success', '验证码已提交');
+            //             // 提交后隐藏验证码
+            //             captchaArea.classList.add('hidden');
+            //             captchaInput.value = '';
+            //             currentCaptchaId = null;
+            //             captchaVisibleTimestamp = 0;
+            //             clearCaptchaState();
+            //         } else {
+            //             addLog('success', '操作已确认');
+            //         }
+            //     } catch (e) {
+            //         addLog('error', `提交干预结果失败: ${e.message}`);
+            //     }
             // }
         });
-
-        socketIo.on('manual-mode-required', (data) => {
-            addLog('info', '收到手动模式请求: ' + JSON.stringify(data));
-            manualArea.classList.remove('hidden');
-            if (manualModeTimer) clearTimeout(manualModeTimer);
-            manualModeTimer = setTimeout(() => {
-                if (!manualArea.classList.contains('hidden')) {
-                    alert('手动操作超时（60秒），若无可用的页面，可点击停止按钮结束任务。');
-                }
-                manualModeTimer = null;
-            }, 60000);
-        });
-        socketIo.on('user-intervention-required',async(data)=>{
-            const {id,type,data:interventionData} = data;
-            let result = null;
-            switch(type){
-                // case 'captcha':
-                //     // 显示验证码输入框
-                //     result = await window.electronAPI.showCaptchaDialog(interventionData.imageUrl);
-                //     break;
-                case 'captcha-manual':
-                    await window.electronAPI.showMessageBox({
-                        type: 'info',
-                        title: '提示',
-                        message: '请手动完成浏览器中的人机验证',
-                        buttons: ['我知道了']
-                    });
-                    result = 'done';
-                    break;
-                // case 'login-manual':
-                //     await  window.electronAPI.showMessageBox('请手动登录');
-                //     result = 'done';
-                //     break;
-                // case 'manual-action':
-                //     await  window.electronAPI.showMessageBox(interventionData.message || '请手动完成操作');
-                //     result = 'done';
-                //     break;
-            }
-            await fetch('/api/user-intervention/complete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id, result })
-            });
-        });
         socketIo.on('captcha-cancel', (data) => {
-            // 如果有正在等待的验证码提交回调，可以忽略
+            // // 如果有正在等待的验证码提交回调，可以忽略
+            // addLog('info', '收到取消验证码事件，隐藏验证码区域');
+            // captchaArea.classList.add('hidden');
+            // captchaInput.value = '';
+            // currentCaptchaId = null;
+            // 防误判逻辑
+            if (data && data.reason === 'manual-login-detected') {
+                addLog('info', '检测到手动登录，隐藏验证码区域');
+                captchaArea.classList.add('hidden');
+                captchaInput.value = '';
+                currentCaptchaId = null;
+                captchaVisibleTimestamp = 0;
+                clearCaptchaState();
+                // 如果有等待的验证码 resolve，也取消掉
+                if (captchaResolveForIntervention) {
+                    captchaResolveForIntervention = null; // 丢弃，不提交
+                }
+                return;
+            }
+            const timeSinceVisible = Date.now() - captchaVisibleTimestamp;
+            if (captchaVisibleTimestamp > 0 && timeSinceVisible < 3000) {
+                addLog('warn', `验证码显示仅 ${(timeSinceVisible / 1000).toFixed(1)} 秒，忽略取消事件（可能是误触发）`);
+                return;
+            }
             addLog('info', '收到取消验证码事件，隐藏验证码区域');
             captchaArea.classList.add('hidden');
             captchaInput.value = '';
             currentCaptchaId = null;
+            captchaVisibleTimestamp = 0;
+            clearCaptchaState();
 
         });
         socketIo.on('disconnect', () => {
             addLog('warn', 'Socket.io 断开连接');
         });
     }
+
+    // const captchaSubmitBtn = document.getElementById('captchaSubmitBtn');
+    // if (captchaSubmitBtn) {
+    //     captchaSubmitBtn.addEventListener('click', async () => {
+    //         const code = captchaInput.value.trim();
+    //
+    //         // 隐藏验证码区域
+    //         captchaArea.classList.add('hidden');
+    //
+    //         // Resolve Promise
+    //         if (window._captchaResolve) {
+    //             window._captchaResolve(code);
+    //         }
+    //
+    //         // 提交到后端
+    //         await fetch('/api/scopus/captcha/submit', {
+    //             method: 'POST',
+    //             headers: { 'Content-Type': 'application/json' },
+    //             body: JSON.stringify({ captchaId, captchaCode: code })
+    //         });
+    //     });
+    // }
 
     // 测试发送任务
     taskBtn.addEventListener('click', async () => {
@@ -2759,7 +3312,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
 
         // 可切换不同任务类型测试
         //  const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE','SCOPUS_INCLUSION', 'SCOPUS_AUTHORS','SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS'];
-         const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE','SCOPUS_INCLUSION', 'SCOPUS_AUTHORS','SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS'];
+        const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE', 'SCOPUS_INCLUSION', 'SCOPUS_AUTHORS', 'SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS'];
         // const taskTypes = ['SCOPUS_INCLUSION'];
         const randomType = taskTypes[Math.floor(Math.random() * taskTypes.length)];
 
@@ -2909,6 +3462,65 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     addLog('info', '自动接取任务已关闭');
                 }
             });
+
+            if (window.electronAPI && window.electronAPI.onQuitRequest) {
+                window.electronAPI.onQuitRequest(async () => {
+                    addLog('warn', '收到退出请求，正在清理任务...');
+
+                    try {
+                        // 如果有正在运行的任务，先停止
+                        if (currentTask) {
+                            const apiInfo = apiMap[currentTask.type];
+                            if (apiInfo) {
+                                addLog('info', `正在停止 ${apiInfo.name || currentTask.type} 爬虫...`);
+
+                                // 调用后端停止接口
+                                await apiRequest(`${apiInfo.base}/crawl/stop`, 'POST');
+                                addLog('info', '爬虫已停止');
+
+                                // 如果是 STOMP 任务，发送失败状态
+                                const isManualTask = currentTask.id && currentTask.id.toString().startsWith('manual_');
+                                if (!isManualTask && stompClient && stompClient.connected) {
+                                    const failedTask = {
+                                        id: currentTask.id,
+                                        type: currentTask.type,
+                                        status: "4",
+                                        terminalID: currentTask.terminalID || "",
+                                        startDate: currentTask.startDate || formatDateTimeForBackend(new Date()),
+                                        endDate: formatDateTimeForBackend(new Date()),
+                                        createDate: currentTask.createDate,
+                                        assocID: currentTask.assocID,
+                                        failure: '用户退出应用，任务已终止',
+                                        retryCount: currentTask.retryCount || 0,
+                                        requestData: currentTask.requestData
+                                    };
+                                    stompClient.send("/app/send", {"Content-Type": "application/json"}, JSON.stringify(failedTask));
+                                    addLog('info', '已发送任务失败状态到 STOMP 服务器');
+                                }
+                            }
+                        }
+
+                        // 清除本地状态
+                        clearAppState();
+                        currentTask = null;
+
+                        // 停止轮询
+                        if (pollTimer) {
+                            clearInterval(pollTimer);
+                            pollTimer = null;
+                        }
+
+                        addLog('success', '任务清理完成，允许退出');
+                    } catch (err) {
+                        addLog('error', `清理任务失败: ${err.message}`);
+                    } finally {
+                        // 通知主进程可以退出
+                        window.electronAPI.quitConfirmed();
+                    }
+                });
+
+                addLog('info', '已注册退出清理监听器');
+            }
             addLog('success', '页面初始化完成');
         } catch (err) {
             errorMsgEl.textContent = '❌ 未连接到后端服务，请启动服务后刷新页面';

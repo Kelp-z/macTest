@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 
-const { startServer } = require('./server');
+const { startServer, cleanupAllCrawlers} = require('./server');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -96,12 +96,20 @@ function createWindow() {
                 // 设置超时，防止前端无响应
                 const timeout = setTimeout(() => {
                     forceQuit();
-                }, 500); // 0.5秒超时
+                }, 1000); // 1秒超时
 
                 // 等待前端确认
-                ipcMain.once('quit-confirmed', () => {
+                ipcMain.once('quit-confirmed', async () => {
                     clearTimeout(timeout);
+                    try {
+                        console.log('清理服务器资源...');
+                        await cleanupAllCrawlers();
+                    } catch (err) {
+                        console.error('清理服务器资源失败:', err);
+                    }
+
                     forceQuit();
+
                 });
             }
         });

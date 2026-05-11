@@ -4,29 +4,44 @@ const http = require('http');
 const {Server} = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+// 导入外观注册
+const { createCrawlerRegistry } = require('./src/facade/registry');
+const { createInterventionSession } = require('./src/facade/intervention-session');
+const { registerCrawlerRoutes } = require('./src/facade/route-factory');
 
-// 导入爬虫模块
-const googleCrawler = require('./google-scholar-crawler');
-const scopusCrawler = require('./scopus-crawler');
-const wosCrawler = require('./wos-crawler');
-const googleAuthorCrawler = require('./google-scholar-author-crawler');
-const scopusAuthorCrawler = require('./scopus-author-crawler');
-const wosAuthorCrawler = require('./wos-author-crawler');
+const registry = createCrawlerRegistry();
+const session = createInterventionSession(300000);
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {cors: {origin: '*'}});
-const { setIo } = require('./crawler-utils');
+const { setIo } = require('./src/infrastructure/socket-io-manager');
 setIo(io);
 
 const fs = require('fs');
-const {ensureDir} = require("./crawler-utils");
-
+const {ensureDir} = require("./src/utils/common-utils");
 // 截图目录配置
-const SCREENSHOTS_DIR = path.join(process.cwd(), 'output', 'screenshots');
-ensureDir(SCREENSHOTS_DIR); // 确保截图目录存在
-console.log(`截图目录: ${SCREENSHOTS_DIR}`);
-
+const getSafePath = (relativePath) => {
+    // 在 Electron 环境中使用 app.getPath('userData')
+    if (process.versions.electron) {
+        const { app } = require('electron');
+        return path.join(app.getPath('userData'), relativePath);
+    }
+    // 开发环境使用 process.cwd()
+    return path.join(process.cwd(), relativePath);
+};
+const SCREENSHOTS_DIR = getSafePath('output/screenshots');
+try {
+    ensureDir(SCREENSHOTS_DIR); // 确保截图目录存在
+    console.log(`截图目录: ${SCREENSHOTS_DIR}`);
+} catch (err) {
+    console.error('创建截图目录失败:', err.message);
+    // 使用临时目录作为备选方案
+    const os = require('os');
+    const tempScreenshotsDir = path.join(os.tmpdir(), 'spm_crawler', 'screenshots');
+    ensureDir(tempScreenshotsDir);
+    console.log(`使用临时截图目录: ${tempScreenshotsDir}`);
+}
 // 确保前端页面正常被打包
 console.log('__dirname =', __dirname);
 try {
@@ -53,8 +68,9 @@ function validateToken(req, res, next) {
     // if(req.path.startsWith('node_modules') || req.path === '/'|| req.path === '/captcha'|| req.path.startsWith('/captcha/')|| req.path === '/login'|| req.path === '/index'){
     //     return next();
     // }
-    if (req.path.startsWith('node_modules') ||
-        req.path === '/captcha' ||
+    if (req.path.startsWith('/api/user-intervention/complete') ||
+        req.path.startsWith('node_modules') ||
+        req.path.startsWith('/captcha') ||
         req.path.startsWith('/screenshots') ||
         req.path === '/google' ||
         req.path === '/wos' ||
@@ -90,10 +106,28 @@ app.use('/wos', express.static(path.join(__dirname, 'public/wos')));
 // 允许前端访问 node_modules 中的库文件
 app.use('/node_modules', express.static(path.join(__dirname, 'node_modules')));
 
-// 验证码图片访问（供 SCOPUS 和 WOS 共用）
-const captchaDir = scopusCrawler.CONFIG?.CAPTCHA_DIR || wosCrawler.CONFIG?.CAPTCHA_DIR || path.join(__dirname, 'captcha_temp');
-app.use('/captcha', express.static(captchaDir));
+/// 验证码图片访问（供 SCOPUS 和 WOS 共用）
+// const captchaDir = scopusCrawler.CONFIG?.CAPTCHA_DIR || wosCrawler.CONFIG?.CAPTCHA_DIR || path.join(__dirname, 'captcha_temp');
+// app.use('/captcha', express.static(captchaDir));
+// 验证码图片访问固定配置来源
+const captchaDir = path.join(__dirname, 'captcha_temp');
+try {
+    ensureDir(captchaDir);
+    console.log(`验证码目录: ${captchaDir}`);
 
+    app.use('/captcha', express.static(captchaDir, {
+        fallthrough: false,  // 如果文件不存在，返回 404 而不是继续匹配其他路由
+        maxAge: '1h'         //  缓存1小时
+    }));
+} catch (err) {
+    console.error('创建验证码目录失败:', err.message);
+    // 使用临时目录作为备选方案
+    const os = require('os');
+    const tempCaptchaDir = path.join(os.tmpdir(), 'spm_crawler', 'captcha_temp');
+    ensureDir(tempCaptchaDir);
+    console.log(`使用临时验证码目录: ${tempCaptchaDir}`);
+    app.use('/captcha',express.static(tempCaptchaDir));
+}
 // 错误截图访问路由
 app.use('/screenshots', express.static(SCREENSHOTS_DIR));
 
@@ -108,11 +142,7 @@ function convertErrorScreenshotPath(errorObj) {
     return errorObj;
 }
 
-//  存储各个爬虫的 Promise 控制器
-const pendingPromises = {
-    scopus: {captcha: null, manual: null},
-    wos: {captcha: null, manual: null}
-};
+
 
 app.post('/api/system/shutdown', (req, res) => {
     console.log('用户退出应用');
@@ -120,339 +150,128 @@ app.post('/api/system/shutdown', (req, res) => {
     res.json({code: 200, msg: '已记录退出事件'});
 });
 
-//  生成带回调的启动处理
-function createCrawlHandler(crawler, type) {
-    return async (req, res) => {
-        const {keywords, generateExcel, outputDir} = req.body;
-        if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
-            return res.status(400).json({code: 400, msg: '关键词数组不能为空'});
-        }
-        if (crawler.getCrawlerState().isRunning) {
-            return res.status(409).json({code: 409, msg: `${type}爬虫正在运行中`});
-        }
-
-        const taskId = `${type}_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-        const taskCaptchaDir = path.join(captchaDir, taskId);
-        ensureDir(taskCaptchaDir); // 确保目录存在
-
-        const onCaptchaRequired = ({captchaId, imagePath}) => {
-            // 提取图片文件名
-            const fileName = path.basename(imagePath);
-            // 生成完整的 HTTP 访问路径
-            const imageUrl = `http://localhost:3000/captcha/${taskId}/${fileName}`;
-
-            // 打印日志，验证生成的 URL 是否正确
-            console.log(`生成验证码URL: ${imageUrl}`);
-            console.log(`本地图片路径: ${imagePath}`);
-
-            // // 发送给前端的是 HTTP URL，不是本地路径
-            // io.emit('captcha-required', {captchaId, imageUrl, type});
-            //
-            // return new Promise((resolve, reject) => {
-            //     pendingPromises[type].captcha = {resolve, reject};
-            //     setTimeout(() => reject(new Error('验证码输入超时')), 300000);
-            // });
-
-            // 如果已有等待中的 Promise，先 reject
-            if (pendingPromises[type].captcha) {
-                pendingPromises[type].captcha.reject(new Error('验证码已刷新，请重新输入'));
-                pendingPromises[type].captcha = null;
-            }
-
-            io.emit('captcha-required', { captchaId, imageUrl, type });
-            return new Promise((resolve, reject) => {
-                pendingPromises[type].captcha = { resolve, reject };
-                setTimeout(() => reject(new Error('验证码输入超时')), 300000);
-            });
-        };
-
-        const onManualModeRequired = () => {
-            io.emit('manual-mode-required', {type});
-            return new Promise((resolve, reject) => {
-                pendingPromises[type].manual = {resolve, reject};
-                // 300s
-                setTimeout(() => reject(new Error('手动操作超时')), 300000);
-
-            });
-        };
-
-
-        crawler.crawlWos ?
-            crawler.crawlWos(keywords, {
-                onCaptchaRequired,
-                onManualModeRequired,
-                generateExcel,
-                captchaDir: taskCaptchaDir,
-                outputDir
-            }).catch(err => console.error(`${type}爬虫异常:`, err)) :
-            crawler.crawlScopus(keywords, {
-                onCaptchaRequired,
-                onManualModeRequired,
-                generateExcel,
-                captchaDir: taskCaptchaDir,
-                outputDir
-            }).catch(err => console.error(`${type}爬虫异常:`, err));
-
-        res.status(202).json({code: 202, msg: `${type}检索已启动`});
-    };
+//  统一路由注册（crawler_facade）
+function nonEmptyArray(arr, label) {
+    return (!Array.isArray(arr) || arr.length === 0) ? `${label}不能为空` : null;
 }
 
-//  谷歌学术接口（无需回调）
-app.post('/api/google/crawl/start', async (req, res) => {
-    const {keywords, taskType, generateExcel, outputDir} = req.body; // 参数generateExcel是否生成excel
-    if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
-        return res.status(400).json({code: 400, msg: '关键词数组不能为空'});
-    }
-    if (googleCrawler.getCrawlerState().isRunning) {
-        return res.status(409).json({code: 409, msg: '谷歌爬虫正在运行中'});
-    }
-    googleCrawler.crawlGoogleScholar(keywords, {
-        taskType,
-        generateExcel,
-        outputDir
-    }).catch(err => console.error('谷歌爬虫异常:', err));
-    res.status(202).json({code: 202, msg: '谷歌学术检索已启动'});
+registerCrawlerRoutes({
+    app,
+    basePath: '/api/google/crawl',
+    facade: registry.getCrawlerFacade('google'),
+    io,
+    session,
+    validateInput: (input) => nonEmptyArray(input, '关键词数组'),
+    inputFieldName: 'keywords',
+    startSuccessMsg: '谷歌学术检索已启动',
+    convertErrorScreenshotPath
 });
 
-app.post('/api/google/crawl/stop', async (req, res) => {
-    try {
-        await googleCrawler.stopCrawler();
-        res.json({code: 200, msg: '停止信号已发送'});
-    } catch (err) {
-        res.status(500).json({code: 500, msg: err.message});
-    }
+registerCrawlerRoutes({
+    app,
+    basePath: '/api/google/author/crawl',
+    facade: registry.getCrawlerFacade('google-author'),
+    io,
+    session,
+    validateInput: (input) => nonEmptyArray(input, '作者姓名数组'),
+    inputFieldName: 'keywords',
+    startSuccessMsg: '谷歌学术作者检索已启动',
+    convertErrorScreenshotPath
 });
 
-app.get('/api/google/crawl/status', (req, res) => {
-    const state = googleCrawler.getCrawlerState();
-    if (state.error) convertErrorScreenshotPath(state.error);
-    res.json({code: 200, data: state});
+registerCrawlerRoutes({
+    app,
+    basePath: '/api/scopus/crawl',
+    facade: registry.getCrawlerFacade('scopus'),
+    io,
+    session,
+    validateInput: (input) => nonEmptyArray(input, '关键词数组'),
+    inputFieldName: 'keywords',
+    startSuccessMsg: 'Scopus检索已启动',
+    convertErrorScreenshotPath
 });
 
-app.post('/api/google/crawl/reset', (req, res) => {
-    googleCrawler.resetCrawlerState();
-    res.json({code: 200, msg: '状态已重置'});
+registerCrawlerRoutes({
+    app,
+    basePath: '/api/scopus/author/crawl',
+    facade: registry.getCrawlerFacade('scopus-author'),
+    io,
+    session,
+    validateInput: (input) => nonEmptyArray(input, '作者列表'),
+    inputFieldName: 'authors',
+    startSuccessMsg: 'Scopus作者检索已启动',
+    convertErrorScreenshotPath
 });
 
+registerCrawlerRoutes({
+    app,
+    basePath: '/api/wos/crawl',
+    facade: registry.getCrawlerFacade('wos'),
+    io,
+    session,
+    validateInput: (input) => nonEmptyArray(input, '关键词数组'),
+    inputFieldName: 'keywords',
+    startSuccessMsg: 'WoS检索已启动',
+    convertErrorScreenshotPath
+});
+
+registerCrawlerRoutes({
+    app,
+    basePath: '/api/wos/author/crawl',
+    facade: registry.getCrawlerFacade('wos-author'),
+    io,
+    session,
+    validateInput: (input) => nonEmptyArray(input, '作者列表'),
+    inputFieldName: 'authors',
+    startSuccessMsg: 'WoS作者检索已启动',
+    convertErrorScreenshotPath
+});
+
+// Google restart 特殊接口（当前 facade restart 为可选能力）
 app.post('/api/google/crawl/restart', async (req, res) => {
     const {keywords} = req.body;
     if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
         return res.status(400).json({code: 400, msg: '关键词数组不能为空'});
     }
-    googleCrawler.restartCrawler(keywords).catch(err => console.error('重启异常:', err));
-    res.json({code: 200, msg: '已停止当前检索并开始重新执行'});
-});
-
-//谷歌学术作者信息检索接口
-app.post('/api/google/author/crawl/start', async (req, res) => {
-    const {keywords, taskType, generateExcel, outputDir} = req.body;
-    if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
-        return res.status(400).json({code: 400, msg: '作者姓名数组不能为空'});
-    }
-    if (googleAuthorCrawler.getCrawlerState().isRunning) {
-        return res.status(409).json({code: 409, msg: '谷歌学术作者爬虫正在运行中'});
-    }
-    googleAuthorCrawler.crawlGoogleScholarAuthors(keywords, {
-        taskType,
-        generateExcel,
-        outputDir
-    }).catch(err => console.error('谷歌学术作者爬虫异常:', err));
-    res.status(202).json({code: 202, msg: '谷歌学术作者检索已启动'});
-});
-
-app.post('/api/google/author/crawl/stop', async (req, res) => {
     try {
-        await googleAuthorCrawler.stopCrawler();
-        res.json({code: 200, msg: '停止信号已发送'});
+        const googleFacade = registry.getCrawlerFacade('google');
+        if (typeof googleFacade.restart === 'function') {
+            googleFacade.restart(keywords).catch(err => console.error('重启异常:', err));
+            return res.json({code: 200, msg: '已停止当前检索并开始重新执行'});
+        }
+        return res.status(501).json({code: 501, msg: '当前爬虫不支持重启'});
     } catch (err) {
-        res.status(500).json({code: 500, msg: err.message});
+        return res.status(500).json({code: 500, msg: err.message});
     }
 });
 
-app.get('/api/google/author/crawl/status', (req, res) => {
-    const state = googleAuthorCrawler.getCrawlerState();
-    if (state.error) convertErrorScreenshotPath(state.error);
-    res.json({code: 200, data: state});
-});
-
-app.post('/api/google/author/crawl/reset', (req, res) => {
-    googleAuthorCrawler.resetCrawlerState();
-    res.json({code: 200, msg: '状态已重置'});
-});
-
-//  Scopus 接口
-app.post('/api/scopus/crawl/start', createCrawlHandler(scopusCrawler, 'scopus'));
-
-app.post('/api/scopus/crawl/stop', (req, res) => {
-    scopusCrawler.stopCrawler();
-    if (pendingPromises.scopus.captcha) {
-        pendingPromises.scopus.captcha.reject(new Error('用户停止'));
-        pendingPromises.scopus.captcha = null;
-    }
-    if (pendingPromises.scopus.manual) {
-        pendingPromises.scopus.manual.reject(new Error('用户停止'));
-        pendingPromises.scopus.manual = null;
-    }
-    res.json({code: 200, msg: '停止信号已发送'});
-});
-
-app.get('/api/scopus/crawl/status', (req, res) => {
-    const state = scopusCrawler.getCrawlerState();
-    if (state.error) convertErrorScreenshotPath(state.error);
-    res.json({code: 200, data: state});
-});
-
-app.post('/api/scopus/crawl/reset', (req, res) => {
-    scopusCrawler.resetCrawlerState();
-    res.json({code: 200, msg: '状态已重置'});
-});
-
+// 验证码提交
 app.post('/api/scopus/captcha/submit', (req, res) => {
     const {captchaId, captchaCode} = req.body;
-    const state = scopusCrawler.getCrawlerState();
-    if (state.waitingForCaptcha && state.captchaId === captchaId && pendingPromises.scopus.captcha) {
-        pendingPromises.scopus.captcha.resolve(captchaCode);
-        pendingPromises.scopus.captcha = null;
-        res.json({code: 200, msg: '验证码已提交'});
-    } else {
-        res.status(404).json({code: 404, msg: '无效的验证码请求'});
-    }
-});
-
-app.post('/api/scopus/crawl/manual-confirm', (req, res) => {
-    const state = scopusCrawler.getCrawlerState();
-    if (state.manualModeActive && pendingPromises.scopus.manual) {
-        pendingPromises.scopus.manual.resolve();
-        pendingPromises.scopus.manual = null;
-        res.json({code: 200, msg: '已确认'});
-    } else {
-        res.status(400).json({code: 400, msg: '未处于手动模式'});
-    }
-});
-// Scopus 作者检索接口
-app.post('/api/scopus/author/crawl/start', async (req, res) => {
-    const {authors, generateExcel, outputDir} = req.body; // authors 可以是对象数组或字符串数组
-    if (!authors || !Array.isArray(authors) || authors.length === 0) {
-        return res.status(400).json({code: 400, msg: '作者列表不能为空'});
-    }
-    if (scopusAuthorCrawler.getCrawlerState().isRunning) {
-        return res.status(409).json({code: 409, msg: 'Scopus作者爬虫正在运行中'});
-    }
-    // 异步执行，不等待结果
-    scopusAuthorCrawler.crawlScopusAuthors(authors, {generateExcel, outputDir}).catch(err => {
-        console.error('Scopus作者爬虫异常:', err);
-    });
-    res.status(202).json({code: 202, msg: 'Scopus作者检索已启动'});
-});
-
-app.post('/api/scopus/author/crawl/stop', async (req, res) => {
-    try {
-        await scopusAuthorCrawler.stopCrawler();
-        res.json({code: 200, msg: '停止信号已发送'});
-    } catch (err) {
-        res.status(500).json({code: 500, msg: err.message});
-    }
-});
-
-app.get('/api/scopus/author/crawl/status', (req, res) => {
-    const state = scopusAuthorCrawler.getCrawlerState();
-    if (state.error) convertErrorScreenshotPath(state.error);
-    res.json({code: 200, data: state});
-});
-
-app.post('/api/scopus/author/crawl/reset', (req, res) => {
-    scopusAuthorCrawler.resetCrawlerState();
-    res.json({code: 200, msg: '状态已重置'});
-});
-//  WoS 接口
-app.post('/api/wos/crawl/start', createCrawlHandler(wosCrawler, 'wos'));
-
-app.post('/api/wos/crawl/stop', (req, res) => {
-    wosCrawler.stopCrawler();
-    if (pendingPromises.wos.captcha) {
-        pendingPromises.wos.captcha.reject(new Error('用户停止'));
-        pendingPromises.wos.captcha = null;
-    }
-    if (pendingPromises.wos.manual) {
-        pendingPromises.wos.manual.reject(new Error('用户停止'));
-        pendingPromises.wos.manual = null;
-    }
-    res.json({code: 200, msg: '停止信号已发送'});
-});
-
-app.get('/api/wos/crawl/status', (req, res) => {
-    const state = wosCrawler.getCrawlerState();
-    if (state.error) convertErrorScreenshotPath(state.error);
-    res.json({code: 200, data: state});
-});
-
-app.post('/api/wos/crawl/reset', (req, res) => {
-    wosCrawler.resetCrawlerState();
-    res.json({code: 200, msg: '状态已重置'});
+    const result = session.submitCaptcha('scopus', captchaId, captchaCode);
+    if (!result.ok) return res.status(404).json({code: 404, msg: result.msg});
+    res.json({code: 200, msg: result.msg});
 });
 
 app.post('/api/wos/captcha/submit', (req, res) => {
     const {captchaId, captchaCode} = req.body;
-    const state = wosCrawler.getCrawlerState();
-    if (state.waitingForCaptcha && state.captchaId === captchaId && pendingPromises.wos.captcha) {
-        pendingPromises.wos.captcha.resolve(captchaCode);
-        pendingPromises.wos.captcha = null;
-        res.json({code: 200, msg: '验证码已提交'});
-    } else {
-        res.status(404).json({code: 404, msg: '无效的验证码请求'});
-    }
+    const result = session.submitCaptcha('wos', captchaId, captchaCode);
+    if (!result.ok) return res.status(404).json({code: 404, msg: result.msg});
+    res.json({code: 200, msg: result.msg});
 });
 
-app.post('/api/wos/crawl/manual-confirm', (req, res) => {
-    const state = wosCrawler.getCrawlerState();
-    if (state.manualModeActive && pendingPromises.wos.manual) {
-        pendingPromises.wos.manual.resolve();
-        pendingPromises.wos.manual = null;
-        res.json({code: 200, msg: '已确认'});
-    } else {
-        res.status(400).json({code: 400, msg: '未处于手动模式'});
-    }
-});
+// 手动确认
+// app.post('/api/scopus/crawl/manual-confirm', (req, res) => {
+//     const result = session.confirmManual('scopus');
+//     if (!result.ok) return res.status(400).json({code: 400, msg: result.msg});
+//     res.json({code: 200, msg: result.msg});
+// });
 
-// WoS 作者检索接口
-app.post('/api/wos/author/crawl/start', async (req, res) => {
-    const {authors, generateExcel, outputDir} = req.body; // authors 可以是对象数组或字符串数组
-    if (!authors || !Array.isArray(authors) || authors.length === 0) {
-        return res.status(400).json({code: 400, msg: '作者列表不能为空'});
-    }
-    if (wosAuthorCrawler.getCrawlerState().isRunning) {
-        return res.status(409).json({code: 409, msg: 'WoS作者爬虫正在运行中'});
-    }
-    // 定义手动登录回调
-    const onManualLoginRequired = () => {
-        io.emit('manual-login-required', {type: 'wos-author'});
-    };
-    // 异步执行，不等待结果
-    wosAuthorCrawler.crawlWosAuthors(authors, {generateExcel, outputDir, onManualLoginRequired}).catch(err => {
-        console.error('WoS作者爬虫异常:', err);
-    });
-    res.status(202).json({code: 202, msg: 'WoS作者检索已启动'});
-});
-
-app.post('/api/wos/author/crawl/stop', async (req, res) => {
-    try {
-        await wosAuthorCrawler.stopCrawler();
-        res.json({code: 200, msg: '停止信号已发送'});
-    } catch (err) {
-        res.status(500).json({code: 500, msg: err.message});
-    }
-});
-
-app.get('/api/wos/author/crawl/status', (req, res) => {
-    const state = wosAuthorCrawler.getCrawlerState();
-    if (state.error) convertErrorScreenshotPath(state.error);
-    res.json({code: 200, data: state});
-});
-
-app.post('/api/wos/author/crawl/reset', (req, res) => {
-    wosAuthorCrawler.resetCrawlerState();
-    res.json({code: 200, msg: '状态已重置'});
-});
+// app.post('/api/wos/crawl/manual-confirm', (req, res) => {
+//     const result = session.confirmManual('wos');
+//     if (!result.ok) return res.status(400).json({code: 400, msg: result.msg});
+//     res.json({code: 200, msg: result.msg});
+// });
 
 // Socket.io 连接
 io.on('connection', (socket) => {
@@ -467,39 +286,91 @@ io.use((socket, next) => {
     next(new Error('Authentication error'));
 })
 
+io.on('connection', (socket) => {
+    socket.on('submit-captcha', ({ source, captchaId, captchaCode }) => {
+        const crawler = registry.getCrawlerFacade(source);
 
-// 存储每个干预请求的resolve/reject
-const { pendingInterventions } = require('./crawler-utils');
+        if (crawler && crawler.submitCaptcha) {
+            const result = crawler.submitCaptcha(captchaId, captchaCode);
+            socket.emit('captcha-result', result);
+        } else {
+            socket.emit('captcha-result', { ok: false, msg: '无效的爬虫源' });
+        }
+    });
+
+    // 确认手动操作
+    socket.on('confirm-manual', ({ source }) => {
+        const crawler = registry.getCrawlerFacade(source);
+
+        if (crawler && crawler.confirmManual) {
+            const result = crawler.confirmManual();
+            socket.emit('manual-result', result);
+        }
+    });
+
+    // 取消干预
+    socket.on('cancel-intervention', ({ source, reason }) => {
+        const crawler = registry.getCrawlerFacade(source);
+
+        if (crawler && crawler.cancelIntervention) {
+            crawler.cancelIntervention(reason);
+        }
+    });
+});
+
+
+
 // 手动干预请求处理函数
 function requestUserIntervention(socketID, intervention) {
     return new Promise((resolve, reject) => {
         const {id, type, data} = intervention;
-        //超时处理(5min)
-        const timeout = setTimeout(()=>{
-            pendingInterventions.delete(id);
-            reject(new Error(`用户干预超时：${type}`));
-        },300000);
-        pendingInterventions.set(id,{resolve,reject,timeout});
-    //     发送统一事件给前端
-        io.to(socketID).emit('user-intervention-required',{id,type,data});
+        if (type === 'captcha') {
+            const promise = session.createCaptchaPromise('global', id);
+            io.to(socketID).emit('user-intervention-required', {id, type, data});
 
+            // 等待结果
+            promise.then(resolve).catch(reject);
+
+        } else if (type === 'manual') {
+            const promise = session.createManualPromise('global');
+            io.to(socketID).emit('user-intervention-required', {id, type, data});
+
+            // 等待确认
+            promise.then(resolve).catch(reject);
+
+        } else {
+            reject(new Error(`不支持的干预类型: ${type}`));
+        }
     });
 }
 // 前端完成干预后调用此接口
-app.post('/api/user-intervention/complete',(req,res) =>{
-    // result可能为验证码字符串（学术猫）或者确认标志（手动确认站点）等
-    const {id,result} = req.body;
-    const pending = pendingInterventions.get(id);
-    if(pending){
-        clearTimeout(pending.timeout);
-        pendingInterventions.delete(id);
-        pending.resolve(result);
-        res.json({code:200,msg:'ok'});
-    }else {
-        res.status(404).json({code:404,msg:'未找到对应的干预请求'});
+app.post('/api/user-intervention/complete', (req, res) => {
+    const { id, result, type, source } = req.body;
+
+    // 如果没传 source，尝试从 session 中兼容
+    const facade = registry.getCrawlerFacade(source || 'global');
+    if (!facade) {
+        return res.status(404).json({ code: 404, msg: '无效的爬虫源' });
+    }
+
+    if (type === 'captcha') {
+        const response = facade.submitCaptcha(id, result);
+        if (response.ok) {
+            res.json({ code: 200, msg: '验证码已提交' });
+        } else {
+            res.status(404).json({ code: 404, msg: response.msg });
+        }
+    } else if (type === 'manual') {
+        const response = facade.confirmManual();
+        if (response.ok) {
+            res.json({ code: 200, msg: '手动操作已确认' });
+        } else {
+            res.status(404).json({ code: 404, msg: response.msg });
+        }
+    } else {
+        res.status(400).json({ code: 400, msg: '无效的干预类型' });
     }
 });
-
 // 加载全局配置
 let globalConfig = {};
 const globalConfigPath = path.join(__dirname, 'config.json');
@@ -568,4 +439,72 @@ if (require.main === module) {
     });
 }
 
-module.exports = {app, server, io, startServer};
+process.on('SIGINT', async () => {
+    console.log('\n收到中断信号，正在清理...');
+    await cleanupAllCrawlers();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('\n收到终止信号，正在清理...');
+    await cleanupAllCrawlers();
+    process.exit(0);
+});
+// 未捕获异常的兜底处理
+process.on('uncaughtException', async (err) => {
+    console.error('未捕获的异常:', err);
+    await cleanupAllCrawlers();
+    process.exit(1);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+    console.error('未处理的 Promise 拒绝:', reason);
+    await cleanupAllCrawlers();
+    process.exit(1);
+});
+/**
+ * 清理所有爬虫资源（供进程退出和 API 调用）
+ */
+async function cleanupAllCrawlers() {
+
+    const sources = ['google', 'google-author', 'scopus', 'scopus-author', 'wos', 'wos-author'];
+    let cleanedCount = 0;
+
+    for (const source of sources) {
+        try {
+            const facade = registry.getExistingFacade(source);
+            if (facade) {
+                const state = await facade.getState();
+                if (state.isRunning) {
+                    console.log(`停止 ${source} 爬虫...`);
+                    await facade.stop();
+                    await facade.resetState();
+                    session.cancelSource(source, '服务器关闭');
+                    cleanedCount++;
+                }
+            }
+        } catch (err) {
+            console.error(` 清理 ${source} 失败:`, err.message);
+        }
+    }
+
+    // 关闭 Socket.IO
+    if (io) {
+        console.log('关闭 Socket.IO...');
+        io.close();
+    }
+
+    // 关闭 HTTP 服务器
+    if (server) {
+        console.log('关闭 HTTP 服务器...');
+        await new Promise((resolve) => {
+            server.close(() => {
+                console.log('HTTP 服务器已关闭');
+                resolve();
+            });
+        });
+    }
+
+    console.log(`清理完成，共停止 ${cleanedCount} 个运行中的爬虫`);
+}
+module.exports = {app, server, io, startServer,cleanupAllCrawlers};

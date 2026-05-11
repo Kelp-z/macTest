@@ -24,7 +24,7 @@
     "express": "^5.2.1",
     "glob": "^13.0.6",
     "node-machine-id": "^1.1.12",
-    "playwright": "^1.35.0",
+    "playwright": "npm:rebrowser-playwright@^1.35.0",
     "playwright-extra": "^4.3.6",
     "proxy-chain": "^2.7.1",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
@@ -42,6 +42,7 @@
     "nodemon": "^3.1.14"
   },
   "build": {
+    "npmRebuild": false,
     "appId": "com.spm.spmcrawler",
     "productName": "SPM Crawler",
     "directories": {
@@ -55,26 +56,15 @@
       "allowToChangeInstallationDirectory": true
     },
     "files": [
-      "main.js",
-      "server.js",
-      "google-scholar-crawler.js",
-      "scopus-crawler.js",
-      "wos-crawler.js",
+      "*.js",
       "public/**/*",
-      "**/*.js",
+      "src/**/*",
       "node_modules/**/*"
     ],
     "extraResources": [
       {
         "from": "browsers",
         "to": "browsers",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "node_modules/playwright",
-        "to": "playwright",
         "filter": [
           "**/*"
         ]
