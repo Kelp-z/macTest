@@ -2586,9 +2586,9 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         if (electronToken) {
             options.query.token = electronToken;
         }
-        if (backendToken) {
-            options.query.token = backendToken;
-        }
+        // if (backendToken) {
+        //     options.query.token = backendToken;
+        // }
         socketIo = io(socketUrl, options);
 
 
