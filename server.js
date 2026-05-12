@@ -4,6 +4,8 @@ const http = require('http');
 const {Server} = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+// 导入配置管理
+const configManager = require('./src/infrastructure/config-manager');
 // 导入外观注册
 const { createCrawlerRegistry } = require('./src/facade/registry');
 const { createInterventionSession } = require('./src/facade/intervention-session');
@@ -14,7 +16,17 @@ const session = createInterventionSession(300000);
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {cors: {origin: '*'}});
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    },
+    pingInterval: 15000,    // 每 15 秒发送心跳
+    pingTimeout: 600000,     //超时
+    maxHttpBufferSize: 1e8, // 100MB，防止大数据包被拒绝
+    allowEIO3: true,        // 兼容 Socket.IO v3 客户端
+    transports: ['websocket', 'polling'] // 优先 WebSocket
+});
 const { setIo } = require('./src/infrastructure/socket-io-manager');
 setIo(io);
 
@@ -275,8 +287,47 @@ app.post('/api/wos/captcha/submit', (req, res) => {
 
 // Socket.io 连接
 io.on('connection', (socket) => {
-    console.log('前端已连接');
-    socket.on('disconnect', () => console.log('前端断开连接'));
+
+    console.log(`前端已连接 (ID: ${socket.id})`);
+    console.log(`连接时间: ${new Date().toLocaleString()}`);
+    console.log(`传输方式: ${socket.conn.transport.name}`);
+
+    //  记录最后一次心跳时间
+    let lastPingTime = Date.now();
+    let pingCount = 0;
+
+    socket.on('ping', () => {
+        lastPingTime = Date.now();
+        pingCount++;
+        if (pingCount % 20 === 0) {
+            console.log(`Socket已接收 ${pingCount} 次心跳，连接稳定`);
+        }
+    });
+
+    socket.on('disconnect', (reason) => {
+        const idleTime = Date.now() - lastPingTime;
+        const connectedDuration = Date.now() - socket.conn.createdAt;
+
+        console.log(`前端断开连接 (ID: ${socket.id})`);
+        console.log(`断开原因: ${reason}`);
+        console.log(`连接持续时间: ${Math.round(connectedDuration / 1000)} 秒 (${Math.round(connectedDuration / 60000)} 分钟)`);
+        console.log(`距离上次心跳: ${Math.round(idleTime / 1000)} 秒`);
+        console.log(`总心跳次数: ${pingCount}`);
+        console.log(`断开时间: ${new Date().toLocaleString()}`);
+
+        if (idleTime > 60000) {
+            console.warn(`警告：客户端空闲时间过长（>${Math.round(idleTime / 1000)}秒）`);
+        }
+
+        if (connectedDuration < 60000) {
+            console.warn(`警告：连接持续时间过短，可能是瞬时断开`);
+        }
+
+        // 如果是服务器主动断开，记录原因
+        if (reason === 'server namespace disconnect') {
+            console.error(`服务器主动断开连接`);
+        }
+    });
 });
 io.use((socket, next) => {
     const token = socket.handshake.query.token;
@@ -371,6 +422,21 @@ app.post('/api/user-intervention/complete', (req, res) => {
         res.status(400).json({ code: 400, msg: '无效的干预类型' });
     }
 });
+// 添加配置接口，供前端获取后端服务配置
+app.get('/api/config', (req, res) => {
+    const backendConfig = configManager.getBackendConfig();
+    res.json({
+        code: 200,
+        data: {
+            localPort: backendConfig.LOCAL_PORT,
+            springPort: backendConfig.SPRING_PORT,
+            localHost: backendConfig.LOCAL_HOST,
+            localBaseUrl: backendConfig.LOCAL_BASE_URL,
+            springBaseUrl: backendConfig.SPRING_BASE_URL
+        }
+    });
+});
+
 // 加载全局配置
 let globalConfig = {};
 const globalConfigPath = path.join(__dirname, 'config.json');
@@ -413,7 +479,9 @@ function cleanOldLogs() {
 cleanOldLogs();
 
 // 适应electron将直接监听改为导出一个启动函数
-const PORT = process.env.PORT || 3000;
+const DEFAULT_PORT = configManager.getLocalPort() || 3000;
+const PORT = process.env.PORT || DEFAULT_PORT;
+
 
 function startServer(port = PORT, token = null) {
     if (token) {

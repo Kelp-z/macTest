@@ -64,6 +64,8 @@ class BaseCrawler {
             await this.takeErrorScreenshot();
             throw this.state.error;
         }finally {
+            // 移除浏览器关闭监听器
+            this.browserManager.removeBrowserCloseListener(this.browser);
             // 清理会话
             this.interventionSession.cancelSource(this.crawlerType, '爬虫执行结束');
             await this.cleanup();
@@ -89,6 +91,19 @@ class BaseCrawler {
         const {page,context} = await this.browserManager.createPage(this.browser);
         this.page = page;
         this.context = context;
+        //  设置浏览器关闭监听器
+        this.browserManager.setupBrowserCloseListener(this.browser, (closeInfo) => {
+            this.logger.error(`浏览器异常关闭: ${closeInfo.message}`);
+
+            this.stop();
+            // 设置错误状态
+            if (!this.state.error) {
+                this.state.error = this.errorHandler.format(
+                    new Error(closeInfo.message),
+                    this.crawlerType
+                );
+            }
+        });
     }
 
     async cleanup(){

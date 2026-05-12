@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { humanClick, humanType } = require('../utils/playwright-utils');
 const { academicCatLogin, academicCatNavigateToTarget } = require('../utils/academic-cat-utils');
+const { checkForServerError } = require('../crawlers/wos-author-crawler');
+const configManager = require("../infrastructure/config-manager");
 
 /**
  * wos 论文爬虫类
@@ -76,7 +78,9 @@ class WosCrawler extends BaseCrawler {
             const { captchaId, imagePath } = data;
             const taskId = imagePath.split(path.sep).slice(-2, -1)[0];
             const fileName = path.basename(imagePath);
-            const imageUrl = `http://localhost:3000/captcha/${fileName}`;
+            const configManager = require('../infrastructure/config-manager');
+            const localBaseUrl = configManager.getLocalBaseUrl();
+            const imageUrl = `${localBaseUrl}/captcha/${fileName}`;
 
             this.state.waitingForCaptcha = true;
             this.state.captchaId = captchaId;
@@ -246,75 +250,241 @@ class WosCrawler extends BaseCrawler {
     //     throw new Error('等待 WoS 页面超时，未检测到关键元素');
     // }
 
+    // async _waitForWosReady(page = null, timeout = 30000) {
+    //     if (typeof page === 'number') {
+    //         timeout = page;
+    //         page = null;
+    //     }
+    //     const targetPage = page || this.page;
+    //     this.logger.info(`_waitForWosReady 开始，页面 URL: ${targetPage.url()}`);
+    //
+    //     const selector = '#composeQuerySmartSearch';
+    //     const startTime = Date.now();
+    //
+    //     // 1. 先等待元素出现在 DOM 中（不要求可见），确保元素已渲染
+    //     try {
+    //         await targetPage.waitForSelector(selector, { state: 'attached', timeout: 15000 });
+    //         this.logger.info('搜索框 DOM 元素已存在');
+    //     } catch (err) {
+    //         throw new Error(`搜索框元素未出现在 DOM 中: ${err.message}`);
+    //     }
+    //
+    //     await this._closeCookiePopup()
+    //     // 2. 尝试关闭可能遮挡输入框的弹窗（如 Cookie 同意、隐私声明等）
+    //     const closePopup = async () => {
+    //         // 常见的有 Accept / Got it / 同意 按钮
+    //         const acceptButtons = [
+    //             'button:has-text("Accept")',
+    //             'button:has-text("Agree")',
+    //             'button:has-text("Got it")',
+    //             'button:has-text("同意")',
+    //             'button:has-text("关闭")',
+    //             '[aria-label="Close"]',
+    //             '.cookie-accept',
+    //             '.privacy-accept'
+    //         ];
+    //         for (const btnSelector of acceptButtons) {
+    //             try {
+    //                 const btn = targetPage.locator(btnSelector).first();
+    //                 if (await btn.isVisible({ timeout: 1000 })) {
+    //                     await btn.click();
+    //                     this.logger.info(`关闭弹窗: ${btnSelector}`);
+    //                     await targetPage.waitForTimeout(1000);
+    //                 }
+    //             } catch (e) {}
+    //         }
+    //     };
+    //     await closePopup();
+    //
+    //     // 3. 再次等待元素可见（此时覆盖层应已关闭）
+    //     while (Date.now() - startTime < timeout) {
+    //         if (this.shouldStop) return false;
+    //         try {
+    //             await targetPage.waitForSelector(selector, { state: 'visible', timeout: 5000 });
+    //             // 额外确保元素可交互（offsetParent 不为 null）
+    //             await targetPage.waitForFunction(
+    //                 (sel) => {
+    //                     const el = document.querySelector(sel);
+    //                     return el && el.offsetParent !== null;
+    //                 },
+    //                 { timeout: 3000 },
+    //                 selector
+    //             );
+    //             this.logger.info(`✅ 检测到可见的 WoS 搜索输入框 (${targetPage.url()})`);
+    //             return true;
+    //         } catch (e) {
+    //             this.logger.debug(`等待可见失败，尝试关闭弹窗: ${e.message}`);
+    //             await closePopup(); // 再次尝试关闭可能的弹窗
+    //             await this.safeDelay(1000, 2000);
+    //         }
+    //     }
+    //     throw new Error(`等待 WoS 页面超时，未检测到可见的关键元素 (最后 URL: ${targetPage.url()})`);
+    // }
+
+    // async _waitForWosReady(page = null, timeout = 30000) {
+    //     // 兼容调用方式：第一个参数可能是超时时间
+    //     if (typeof page === 'number') {
+    //         timeout = page;
+    //         page = null;
+    //     }
+    //     const targetPage = page || this.page;
+    //     this.logger.info(`_waitForWosReady 开始，页面 URL: ${targetPage.url()}`);
+    //
+    //     const selector = '#composeQuerySmartSearch';
+    //     const startTime = Date.now();
+    //
+    //     // 1. 确保元素已挂载到 DOM 中
+    //     try {
+    //         await targetPage.waitForSelector(selector, { state: 'attached', timeout: 15000 });
+    //         this.logger.info('搜索框 DOM 元素已存在');
+    //     } catch (err) {
+    //         throw new Error(`搜索框元素未出现在 DOM 中: ${err.message}`);
+    //     }
+    //
+    //     // 2. 关闭已知的 Cookie 弹窗（特定实现）
+    //     await this._closeCookiePopup();
+    //
+    //     // 3. 通用弹窗清理函数：点击常见按钮 + 暴力删除遮挡层
+    //     const closePopup = async () => {
+    //         // 3.1 尝试点击“接受/同意”按钮
+    //         const acceptButtons = [
+    //             'button:has-text("Accept")',
+    //             'button:has-text("Agree")',
+    //             'button:has-text("Got it")',
+    //             'button:has-text("同意")',
+    //             'button:has-text("关闭")',
+    //             '[aria-label="Close"]',
+    //             '.cookie-accept',
+    //             '.privacy-accept'
+    //         ];
+    //         for (const btnSelector of acceptButtons) {
+    //             try {
+    //                 const btn = targetPage.locator(btnSelector).first();
+    //                 if (await btn.isVisible({ timeout: 1000 })) {
+    //                     await btn.click();
+    //                     this.logger.info(`关闭弹窗(按钮): ${btnSelector}`);
+    //                     await targetPage.waitForTimeout(1000);
+    //                 }
+    //             } catch (e) {}
+    //         }
+    //
+    //         // 3.2 暴力移除常见遮挡层（之前已添加的代码）
+    //         await targetPage.evaluate(() => {
+    //             const overlaySelectors = [
+    //                 '.onetrust-pc-dark-filter',
+    //                 '.cookie-overlay',
+    //                 '.modal-backdrop',
+    //                 '#onetrust-consent-sdk',
+    //                 '.privacy-consent',
+    //                 '.cc-window',
+    //                 '.cc-overlay',
+    //                 '.ot-sdk-container',
+    //                 '.ot-floating-button',
+    //             ];
+    //             overlaySelectors.forEach(sel => {
+    //                 document.querySelectorAll(sel).forEach(el => el.remove());
+    //             });
+    //             // 恢复页面滚动和交互
+    //             document.body.style.overflow = '';
+    //             document.body.style.position = '';
+    //             document.documentElement.style.overflow = '';
+    //             document.body.style.pointerEvents = '';
+    //         });
+    //     };
+    //
+    //     // 第一次清理弹窗
+    //     await closePopup();
+    //
+    //     // 4. 核心等待：轮询检查元素尺寸（宽度 > 0）即可认为就绪
+    //     this.logger.info('开始轮询检查搜索框的尺寸...');
+    //     while (Date.now() - startTime < timeout) {
+    //         // 检测停止信号
+    //         if (this.shouldStop) {
+    //             this.logger.info('检测到停止信号，退出 WoS 就绪等待');
+    //             return false;
+    //         }
+    //
+    //         try {
+    //             // 使用 waitForFunction 检查组件的 bounding box 是否有效
+    //             await targetPage.waitForFunction(
+    //                 (sel) => {
+    //                     const el = document.querySelector(sel);
+    //                     return el && el.getBoundingClientRect().width > 0;
+    //                 },
+    //                 { timeout: 5000 },  // 每次检查最多等5秒
+    //                 selector
+    //             );
+    //
+    //             this.logger.info(`✅ 搜索框已具有非零尺寸，视为可用 (${targetPage.url()})`);
+    //             return true;
+    //         } catch (e) {
+    //             // 尺寸检查失败，重新尝试清理弹窗并延迟
+    //             this.logger.debug('搜索框尺寸无效，重新清理弹窗');
+    //             await closePopup();
+    //             await this.safeDelay(1000, 2000);
+    //         }
+    //     }
+    //
+    //     // 超时
+    //     throw new Error(`等待 WoS 页面超时，未检测到可用的搜索框 (最后 URL: ${targetPage.url()})`);
+    // }
+
+
     async _waitForWosReady(page = null, timeout = 30000) {
         if (typeof page === 'number') {
             timeout = page;
             page = null;
         }
+
         const targetPage = page || this.page;
         this.logger.info(`_waitForWosReady 开始，页面 URL: ${targetPage.url()}`);
 
-        const selector = '#composeQuerySmartSearch';
+        this._closeCookiePopup();
+        // 可能的搜索框选择器（优先级从左到右）
+        const inputSelectors = [
+            '#composeQuerySmartSearch',
+            'input[data-ta="search-criteria-input"]',
+            'input[aria-label="Search documents, researchers, affiliations, and more"]',
+            'input[placeholder*="Search documents"]',
+        ];
+
         const startTime = Date.now();
 
-        // 1. 先等待元素出现在 DOM 中（不要求可见），确保元素已渲染
-        try {
-            await targetPage.waitForSelector(selector, { state: 'attached', timeout: 15000 });
-            this.logger.info('搜索框 DOM 元素已存在');
-        } catch (err) {
-            throw new Error(`搜索框元素未出现在 DOM 中: ${err.message}`);
-        }
-
-        await this._closeCookiePopup()
-        // 2. 尝试关闭可能遮挡输入框的弹窗（如 Cookie 同意、隐私声明等）
-        const closePopup = async () => {
-            // 常见的有 Accept / Got it / 同意 按钮
-            const acceptButtons = [
-                'button:has-text("Accept")',
-                'button:has-text("Agree")',
-                'button:has-text("Got it")',
-                'button:has-text("同意")',
-                'button:has-text("关闭")',
-                '[aria-label="Close"]',
-                '.cookie-accept',
-                '.privacy-accept'
-            ];
-            for (const btnSelector of acceptButtons) {
-                try {
-                    const btn = targetPage.locator(btnSelector).first();
-                    if (await btn.isVisible({ timeout: 1000 })) {
-                        await btn.click();
-                        this.logger.info(`关闭弹窗: ${btnSelector}`);
-                        await targetPage.waitForTimeout(1000);
-                    }
-                } catch (e) {}
-            }
-        };
-        await closePopup();
-
-        // 3. 再次等待元素可见（此时覆盖层应已关闭）
         while (Date.now() - startTime < timeout) {
-            if (this.shouldStop) return false;
-            try {
-                await targetPage.waitForSelector(selector, { state: 'visible', timeout: 5000 });
-                // 额外确保元素可交互（offsetParent 不为 null）
-                await targetPage.waitForFunction(
-                    (sel) => {
-                        const el = document.querySelector(sel);
-                        return el && el.offsetParent !== null;
-                    },
-                    { timeout: 3000 },
-                    selector
-                );
-                this.logger.info(`✅ 检测到可见的 WoS 搜索输入框 (${targetPage.url()})`);
-                return true;
-            } catch (e) {
-                this.logger.debug(`等待可见失败，尝试关闭弹窗: ${e.message}`);
-                await closePopup(); // 再次尝试关闭可能的弹窗
-                await this.safeDelay(1000, 2000);
+            if (this.shouldStop) {
+                this.logger.info('检测到停止信号，退出等待 WoS 页面');
+                return false;
             }
+
+            for (const selector of inputSelectors) {
+                try {
+                    // 只要求元素挂载到 DOM，不要求视觉可见
+                    await targetPage.waitForSelector(selector, {
+                        state: 'attached',
+                        timeout: 10000,
+                    });
+
+                    // 额外确认元素有实际尺寸（布局宽度 > 0），确保可操作
+                    const ready = await targetPage.evaluate((sel) => {
+                        const el = document.querySelector(sel);
+                        return el && el.offsetWidth > 0;
+                    }, selector);
+
+                    if (ready) {
+                        this.logger.info('检测到可用的 WoS 搜索输入框');
+                        return true;
+                    }
+                } catch (e) {
+                    // 当前选择器失败，尝试下一个
+                    continue;
+                }
+            }
+
+            // 所有选择器本轮均失败，等待后重试
+            await this.safeDelay(2000, 3000);
         }
-        throw new Error(`等待 WoS 页面超时，未检测到可见的关键元素 (最后 URL: ${targetPage.url()})`);
+
+        throw new Error('等待 WoS 页面超时，未检测到关键元素');
     }
     // async _waitForWosReady(page = null, timeout = 30000) {
     //     const targetPage = page || this.page;   // 兼容旧调用
@@ -448,6 +618,9 @@ class WosCrawler extends BaseCrawler {
      * 检索单篇论文
      */
     async _searchSinglePaper(keyword) {
+        if (!this.isBrowserAvailable()) {
+            throw new Error('浏览器不可用，无法执行搜索');
+        }
         this.logger.info(`检索论文: ${keyword.substring(0, 50)}...`);
 
         // 定位输入框
@@ -472,6 +645,9 @@ class WosCrawler extends BaseCrawler {
 
         let submitButton = null;
         for (const selector of buttonSelectors) {
+            if (!this.isBrowserAvailable()) {
+                throw new Error('浏览器已关闭，无法继续搜索');
+            }
             try {
                 submitButton = await this.page.$(selector);
                 if (submitButton && await submitButton.isVisible()) {
@@ -491,23 +667,45 @@ class WosCrawler extends BaseCrawler {
         await humanClick(this.page, submitButton);
         this.logger.info('搜索按钮点击成功');
 
+        if (!this.isBrowserAvailable()) {
+            throw new Error('浏览器已关闭，无法处理搜索结果');
+        }
+
         // 等待页面响应
         await this.safeDelay(3000, 5000);
 
         // 处理 Cookie 弹窗
         await this._handleCookieConsent();
 
+
+
+
+
         // 判断是否有结果
         const hasResults = await this._checkSearchResults();
 
         if (!hasResults) {
-            this.logger.warn(`未搜索到结果: ${keyword.substring(0, 50)}`);
+            const isAccessDenied = await this._checkAccessDenied();
+            const hasServerError = await this.checkForServerError();
+            const accessionNo = '无';
+
+            let remark = '';
+            if (hasServerError) {
+                remark = '服务器错误，可能遭遇反爬检测';
+            } else if (isAccessDenied) {
+                remark = '无权限访问此资源';
+            }
+
+            this.logger.warn(`未搜索到结果: ${keyword.substring(0, 50)}${
+                hasServerError ? ' (服务器错误)' : isAccessDenied ? ' (无权限)' : ''
+            }`);
             return {
                 isRecruit: 'false',
-                accessionNo: '无',
+                accessionNo,
                 title: keyword,
                 searchTime: new Date().toISOString(),
-                indexedDate: ''
+                indexedDate: '',
+                remark
             };
         }
 
@@ -551,6 +749,14 @@ class WosCrawler extends BaseCrawler {
             return resultLinks.length > 0;
         } catch (error) {
             this.logger.warn(`检查结果时出错: ${error.message}`);
+            return false;
+        }
+    }
+    async _checkAccessDenied() {
+        try {
+            const accessDenied = await this.page.$('span.errMsg:text("You have no access to the requested resource")');
+            return !!accessDenied;
+        } catch (error) {
             return false;
         }
     }

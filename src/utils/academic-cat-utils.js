@@ -490,14 +490,14 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
                 const url = page.url();
                 if (wosDomains.some(domain => url.includes(domain))) {
                     candidatePage = page;
-                    addLog(`✅ 找到 WoS 页面: ${url}`);
+                    addLog(`找到 WoS 页面: ${url}`);
                     break;
                 }
             }
             // 若未找到，回退到最后一个页面（原逻辑）
             if (!candidatePage) {
                 candidatePage = allPages[allPages.length - 1];
-                addLog(`⚠️ 未找到 WoS 域名页面，使用最后页面: ${candidatePage.url()}`);
+                addLog(`未找到 WoS 域名页面，使用最后页面: ${candidatePage.url()}`);
             }
 
             // const allPages = context.pages();

@@ -300,11 +300,30 @@
 
 <script>
     //  配置
-    const API = {
+    let API = {
         captcha: 'http://localhost:8080/captchaImage',
         login: 'http://localhost:8080/login'
     };
-
+    async function loadConfig() {
+        try {
+            const response = await fetch('/api/config');
+            if (response.ok) {
+                const result = await response.json();
+                if (result.code === 200 && result.data) {
+                    const config = result.data;
+                    API = {
+                        captcha: `${config.springBaseUrl || 'http://localhost:8080'}/captchaImage`,
+                        login: `${config.springBaseUrl || 'http://localhost:8080'}/login`
+                    };
+                    console.log('已加载配置:', API);
+                }
+            }
+        } catch (err) {
+            console.log('加载配置失败，使用默认值:', err.message);
+        }
+    }
+    // 页面加载时获取配置
+    loadConfig();
     // 简单编码（仅用于演示记住密码，非安全加密）
     function simpleEncode(str) { return btoa(encodeURIComponent(str)); }
     function simpleDecode(str) { return decodeURIComponent(atob(str)); }
@@ -475,18 +494,22 @@
             } else {
 
                 alert(res.msg || '登录失败，请检查账号或密码');
-                if (captchaEnabled) {
-                    await getCode();
-                    codeInput.value = '';
-                }
+                // if (captchaEnabled) {
+                //     await getCode();
+                //     codeInput.value = '';
+                // }
+                await getCode();
+                codeInput.value = '';
             }
         } catch (error) {
             console.error('登录请求异常:', error);
             alert(error.message || '网络错误，请稍后重试');
-            if (captchaEnabled) {
-                await getCode();
-                codeInput.value = '';
-            }
+            // if (captchaEnabled) {
+            //     await getCode();
+            //     codeInput.value = '';
+            // }
+            await getCode();
+            codeInput.value = '';
         } finally {
             loading = false;
             loginBtn.disabled = false;

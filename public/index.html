@@ -930,6 +930,30 @@
     let captchaVisibleTimestamp = 0;  // 验证码最后显示时间戳
     let captchaResolveForIntervention = null;  // user-intervention-require
 
+    // 后端配置（从服务端获取）
+    let backendConfig = {
+        localPort: 3000,
+        springPort: 8080,
+        localHost: 'localhost',
+        localBaseUrl: 'http://localhost:3000',
+        springBaseUrl: 'http://localhost:8080'
+    };
+
+    // 获取后端配置
+    async function loadBackendConfig() {
+        try {
+            const response = await fetch('/api/config');
+            if (response.ok) {
+                const result = await response.json();
+                if (result.code === 200 && result.data) {
+                    backendConfig = result.data;
+                    addLog('info', `已加载后端配置: 本地端口=${backendConfig.localPort}, Spring端口=${backendConfig.springPort}`);
+                }
+            }
+        } catch (err) {
+            addLog('warn', `加载后端配置失败，使用默认值: ${err.message}`);
+        }
+    }
     const originalFetch = window.fetch;
     window.fetch = function (url, options = {}) {
         if ((electronToken || backendToken) && (url.startsWith('/api/') || url.startsWith('http://localhost:3000/api/'))) {
@@ -2799,7 +2823,12 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 addLog('info', 'STOMP 库已加载，开始连接...');
 
                 // const socket = new SockJS(`http://localhost:8080/ws`);
-                const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
+                // const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
+                const springBaseUrl = backendConfig.springBaseUrl || 'http://localhost:8080';
+                let socket = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
+                if (backendToken) {
+                    socket += `&token=${encodeURIComponent(backendToken)}`;
+                }
                 stompClient = Stomp.over(socket);
 
                 const token = localStorage.getItem('token'); // 从 localStorage 获取 token
@@ -2949,7 +2978,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         //     pingInterval: 25000,   // 每25秒发送心跳
         //     pingTimeout: 120000      // 60秒未收到心跳则断开
         // });
-        const socketUrl = 'http://localhost:3000';
+        // const socketUrl = 'http://localhost:3000';
+        const socketUrl = backendConfig.localBaseUrl || 'http://localhost:3000';
         const options = {
             reconnection: true,
             reconnectionAttempts: 10,
@@ -2957,7 +2987,11 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             reconnectionDelayMax: 5000,
             timeout: 20000,
             pingInterval: 25000,   // 每25秒发送心跳
-            pingTimeout: 300000,      // 5min未收到心跳则断开
+            pingTimeout: 1000000,      // 10min未收到心跳则断开
+            transports: ['websocket', 'polling'], // 优先使用 WebSocket
+            upgrade: true,                       // 允许从 polling 升级到 websocket
+            forceNew: false,                     // 重用现有连接
+            autoConnect: true,                   // 自动连接
             query: {}
         };
         if (electronToken) {
@@ -2973,39 +3007,68 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 fetch(`${apiMap[currentTask.type].base}/crawl/status`)
                     .then(res => res.json())
                     .then(data => {
-                        if (data.code === 200 && data.data.manualModeActive) {
-                            addLog('info', '重连后检测到后端处于手动模式，恢复手动确认区域');
-                            manualArea.classList.remove('hidden');
-                            // 重置超时计时器
-                            if (manualModeTimer) clearTimeout(manualModeTimer);
-                            manualModeTimer = setTimeout(() => {
-                                if (!manualArea.classList.contains('hidden')) {
-                                    alert('手动操作超时（60秒），若无可用的页面，可点击停止按钮结束任务。');
+                        if (data.code === 200 && data.data) {
+                            const state = data.data;
+
+                            // 如果任务仍在运行，恢复轮询
+                            if (state.isRunning) {
+                                addLog('info', `任务仍在运行中（进度: ${state.progress}%），恢复轮询`);
+
+                                // 更新 UI
+                                updateUI(state);
+
+                                // 重新启动轮询
+                                if (!isPolling) {
+                                    startPolling();
                                 }
-                                manualModeTimer = null;
-                            }, 60000);
+                            } else {
+                                // 任务已结束，清理本地状态
+                                addLog('info', '任务已结束，清理本地状态');
+                                currentTask = null;
+                                isPolling = false;
+                                if (pollTimer) {
+                                    clearInterval(pollTimer);
+                                    pollTimer = null;
+                                }
+
+                                // 隐藏干预区域
+                                manualArea.classList.add('hidden');
+                                captchaArea.classList.add('hidden');
+                                if (manualModeTimer) {
+                                    clearTimeout(manualModeTimer);
+                                    manualModeTimer = null;
+                                }
+                            }
+
+                            // 如果处于手动模式，显示手动确认区域
+                            if (state.manualModeActive) {
+                                addLog('info', '检测到后端处于手动模式，恢复手动确认区域');
+                                manualArea.classList.remove('hidden');
+
+                                // 重置超时计时器
+                                if (manualModeTimer) clearTimeout(manualModeTimer);
+                                manualModeTimer = setTimeout(() => {
+                                    if (!manualArea.classList.contains('hidden')) {
+                                        alert('手动操作超时（60秒），若无可用的页面，可点击停止按钮结束任务。');
+                                    }
+                                    manualModeTimer = null;
+                                }, 60000);
+                            }
+
+                            // 如果等待验证码，恢复验证码区域
+                            if (state.waitingForCaptcha && state.captchaId && state.captchaImagePath) {
+                                addLog('info', '检测到后端等待验证码，恢复验证码输入区域');
+                                currentCaptchaId = state.captchaId;
+                                captchaImage.src = state.captchaImagePath;
+                                captchaArea.classList.remove('hidden');
+                                saveCaptchaState(state.captchaId, state.captchaImagePath, 'captcha');
+                            }
                         }
                     })
                     .catch(err => addLog('error', '查询手动模式状态失败: ' + err.message));
             }
         });
 
-
-        // socketIo.on('manual-login-required', (data) => {
-        //     addLog('warn', '检测到 WoS 作者检索需要手动登录，请在弹出的对话框中确认');
-        //     // 使用 Electron 原生对话框
-        //     if (window.electronAPI && window.electronAPI.showMessageBox) {
-        //         window.electronAPI.showMessageBox({
-        //             type: 'info',
-        //             title: '手动登录提示123',
-        //             message: '请在谷歌浏览器窗口中手动输入账号密码并点击登录',
-        //             detail: '登录完成后爬虫将自动继续，请勿关闭浏览器窗口。',
-        //             buttons: ['我知道了']
-        //         });
-        //     } else {
-        //         alert('请在弹出的浏览器窗口中手动登录 Web of Science');
-        //     }
-        // });
 
         socketIo.on('user-intervention-required', async (data) => {
             const {id, type, data: interventionData} = data;
@@ -3250,32 +3313,43 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             clearCaptchaState();
 
         });
-        socketIo.on('disconnect', () => {
-            addLog('warn', 'Socket.io 断开连接');
+        socketIo.on('disconnect', (reason) => {
+            addLog('warn', `Socket.io 断开连接: ${reason}`);
+
+            // 根据断开原因给出提示
+            if (reason === 'io server disconnect') {
+                addLog('error', '服务器主动断开了连接');
+                // 服务器主动断开，需要手动重连
+                socketIo.connect();
+            } else if (reason === 'transport close') {
+                addLog('warn', '网络连接中断，将自动重连...');
+            } else if (reason === 'ping timeout') {
+                addLog('error', '心跳超时，网络可能不稳定');
+            } else if (reason === 'parse error') {
+                addLog('error', '数据包解析错误');
+            }
+        });
+        // 监听连接错误
+        socketIo.on('connect_error', (error) => {
+            addLog('error', `Socket.io 连接错误: ${error.message}`);
+            console.error('[Socket] 连接错误详情:', error);
+        });
+
+        // 监听重连尝试
+        socketIo.on('reconnect_attempt', (attemptNumber) => {
+            addLog('info', `正在尝试第 ${attemptNumber} 次重连...`);
+        });
+
+        // 监听重连成功
+        socketIo.on('reconnect', (attemptNumber) => {
+            addLog('success', `重连成功`);
+        });
+
+        // 监听每次重连
+        socketIo.on('reconnecting', (attemptNumber) => {
+            console.log(`[Socket] 重连中... 第 ${attemptNumber} 次`);
         });
     }
-
-    // const captchaSubmitBtn = document.getElementById('captchaSubmitBtn');
-    // if (captchaSubmitBtn) {
-    //     captchaSubmitBtn.addEventListener('click', async () => {
-    //         const code = captchaInput.value.trim();
-    //
-    //         // 隐藏验证码区域
-    //         captchaArea.classList.add('hidden');
-    //
-    //         // Resolve Promise
-    //         if (window._captchaResolve) {
-    //             window._captchaResolve(code);
-    //         }
-    //
-    //         // 提交到后端
-    //         await fetch('/api/scopus/captcha/submit', {
-    //             method: 'POST',
-    //             headers: { 'Content-Type': 'application/json' },
-    //             body: JSON.stringify({ captchaId, captchaCode: code })
-    //         });
-    //     });
-    // }
 
     // 测试发送任务
     taskBtn.addEventListener('click', async () => {
@@ -3364,6 +3438,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     outputDirContainer.classList.add('hide');
                 }
             }
+            // 加载配置
+            await loadBackendConfig();
 
             toggleOutputDir();
             excelSwitch.addEventListener('change', toggleOutputDir);

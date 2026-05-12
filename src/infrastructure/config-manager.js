@@ -57,6 +57,52 @@ class ConfigManager {
     }
 
     /**
+     * 获取后端服务配置
+     * @returns {Object} 后端服务配置，包含端口和URL等信息
+     */
+    getBackendConfig() {
+        return this.config.backend || {
+            LOCAL_PORT: 3000,
+            SPRING_PORT: 8080,
+            LOCAL_HOST: 'localhost',
+            LOCAL_BASE_URL: 'http://localhost:3000',
+            SPRING_BASE_URL: 'http://localhost:8080'
+        };
+    }
+
+    /**
+     * 获取本地服务端口
+     * @returns {number} 本地服务端口号
+     */
+    getLocalPort() {
+        return this.getBackendConfig().LOCAL_PORT;
+    }
+
+    /**
+     * 获取Spring后端端口
+     * @returns {number} Spring后端端口号
+     */
+    getSpringPort() {
+        return this.getBackendConfig().SPRING_PORT;
+    }
+
+    /**
+     * 获取本地服务基础URL
+     * @returns {string} 本地服务基础URL
+     */
+    getLocalBaseUrl() {
+        return this.getBackendConfig().LOCAL_BASE_URL;
+    }
+
+    /**
+     * 获取Spring后端基础URL
+     * @returns {string} Spring后端基础URL
+     */
+    getSpringBaseUrl() {
+        return this.getBackendConfig().SPRING_BASE_URL;
+    }
+
+    /**
      * 获取配置值（支持点号路径）
      * @param {string} path - 配置路径，如 'googleScholar.PRECISE_SEARCH_ENABLED'
      * @param {*} defaultValue - 默认值
@@ -84,14 +130,14 @@ class ConfigManager {
     }
 
     /**
-     * 保存配置（谨慎使用）
+     * 保存配置
      * @param {Object} newConfig - 新配置
      */
     save(newConfig) {
         try {
             fs.writeFileSync(this.configPath, JSON.stringify(newConfig, null, 2), 'utf8');
             this.config = newConfig;
-            console.log('✓ 配置已保存');
+            console.log(' 配置已保存');
         } catch (error) {
             console.error(`保存配置失败: ${error.message}`);
             throw error;

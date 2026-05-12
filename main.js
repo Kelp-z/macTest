@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const { machineIdSync  } = require('node-machine-id');
 const crypto = require('crypto');
+const configManager = require('./src/infrastructure/config-manager');
 
 let mainWindow;
 
@@ -19,7 +20,8 @@ ipcMain.handle('get-electron-token', () => {
 
 app.whenReady().then(async () => {
     try {
-        await startServer(3000,ELECTRON_TOKEN);  // 启动 Express 服务器
+        const localPort = configManager.getLocalPort();
+        await startServer(localPort, ELECTRON_TOKEN);  // 启动 Express 服务器
         createWindow();
     } catch (err) {
         console.error('服务器启动失败:', err);
@@ -74,7 +76,8 @@ function createWindow() {
             preload: path.join(__dirname, 'preload.js')
         }
     });
-    const url = `http://localhost:3000/?token=${ELECTRON_TOKEN}`
+    const localPort = configManager.getLocalPort();
+    const url = `http://localhost:${localPort}/?token=${ELECTRON_TOKEN}`
     mainWindow.loadURL(url);
     // mainWindow.webContents.openDevTools(); // 控制台
     // debugger;

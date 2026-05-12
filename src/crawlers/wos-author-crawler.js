@@ -687,7 +687,7 @@ class WosAuthorCrawler extends BaseCrawler {
                 await this._waitForCaptchaClear();
 
                 // 检查是否有服务器错误
-                const hasServerError = await this._checkForServerError();
+                const hasServerError = await this.checkForServerError();
                 if (hasServerError) {
                     throw new Error('检测到服务器错误 (Server.unexpectedError)，可能是反爬虫检测');
                 }
@@ -788,7 +788,7 @@ class WosAuthorCrawler extends BaseCrawler {
      * 检查是否有服务器错误
      * @returns {Promise<boolean>} - 是否有服务器错误
      */
-    async _checkForServerError() {
+    async checkForServerError() {
         try {
             const content = await this.page.content();
             return content.includes('Server.unexpectedError') ||
@@ -848,7 +848,7 @@ class WosAuthorCrawler extends BaseCrawler {
                 await this._waitForCaptchaClear();
 
                 // 检查是否有服务器错误
-                const hasServerError = await this._checkForServerError();
+                const hasServerError = await this.checkForServerError();
                 if (hasServerError) {
                     throw new Error('检测到服务器错误 (Server.unexpectedError)，可能是反爬虫检测');
                 }

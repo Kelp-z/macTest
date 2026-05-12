@@ -315,6 +315,10 @@ class BrowserManager {
         }
 
         const browser = await chromium.launch(launchOptions);
+
+        // 设置浏览器关闭标记
+        browser._isClosedByUser = false;
+
         return browser;
     }
 
@@ -344,6 +348,59 @@ class BrowserManager {
         const page = await context.newPage();
         return { page, context };
     }
+    /**
+     * 设置浏览器关闭监听器
+     * @param {Object} browser - browser 实例
+     * @param {Function} onCloseCallback - 关闭时的回调函数
+     */
+    setupBrowserCloseListener(browser, onCloseCallback) {
+        if (!browser) {
+            console.warn('浏览器实例为空，无法设置监听器');
+            return;
+        }
+
+        // 移除旧的监听器（防止重复绑定）
+        this.removeBrowserCloseListener(browser);
+
+        // 监听断开连接事件
+        const disconnectedHandler = () => {
+            console.log('[BrowserManager] 检测到浏览器断开连接');
+
+            // 检查是否是用户手动关闭
+            if (!browser._isClosedByUser) {
+                console.warn('[BrowserManager] 浏览器被意外关闭（用户手动关闭或崩溃）');
+
+                // 调用回调通知上层
+                if (typeof onCloseCallback === 'function') {
+                    onCloseCallback({
+                        type: 'unexpected_close',
+                        message: '浏览器已意外关闭',
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            } else {
+                console.log('[BrowserManager] 浏览器正常关闭');
+            }
+        };
+
+        browser.on('disconnected', disconnectedHandler);
+
+        // 保存监听器引用，方便后续移除
+        browser._disconnectedHandler = disconnectedHandler;
+    }
+
+    /**
+     * 移除浏览器关闭监听器
+     * @param {Object} browser - browser 实例
+     */
+    removeBrowserCloseListener(browser) {
+        if (!browser) return;
+
+        if (browser._disconnectedHandler) {
+            browser.removeListener('disconnected', browser._disconnectedHandler);
+            browser._disconnectedHandler = null;
+        }
+    }
 
     /**
      * 关闭浏览器
@@ -352,6 +409,11 @@ class BrowserManager {
     async close(browser) {
         if (browser) {
             try {
+                // 标记为正常关闭
+                browser._isClosedByUser = true;
+
+                // 先移除监听器，避免触发意外关闭回调
+                this.removeBrowserCloseListener(browser);
                 await browser.close();
             } catch (error) {
                 console.error(`关闭浏览器失败: ${error.message}`);
