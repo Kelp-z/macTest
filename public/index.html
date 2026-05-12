@@ -2799,7 +2799,11 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 addLog('info', 'STOMP 库已加载，开始连接...');
 
                 // const socket = new SockJS(`http://localhost:8080/ws`);
-                const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
+                // const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
+                let socket = `http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
+                if (backendToken) {
+                    socket += `&token=${encodeURIComponent(backendToken)}`;
+                }
                 stompClient = Stomp.over(socket);
 
                 const token = localStorage.getItem('token'); // 从 localStorage 获取 token
