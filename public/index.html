@@ -931,7 +931,7 @@
     let captchaResolveForIntervention = null;  // user-intervention-require
 
     // 后端配置（从服务端获取）
-    let backendConfig = {
+    let portConfig = {
         localPort: 3000,
         springPort: 8080,
         localHost: 'localhost',
@@ -940,14 +940,14 @@
     };
 
     // 获取后端配置
-    async function loadBackendConfig() {
+    async function loadPortConfig() {
         try {
             const response = await fetch('/api/config');
             if (response.ok) {
                 const result = await response.json();
                 if (result.code === 200 && result.data) {
-                    backendConfig = result.data;
-                    addLog('info', `已加载后端配置: 本地端口=${backendConfig.localPort}, Spring端口=${backendConfig.springPort}`);
+                    portConfig = result.data;
+                    addLog('info', `已加载后端配置: 本地端口=${portConfig.localPort}, Spring端口=${portConfig.springPort}`);
                 }
             }
         } catch (err) {
@@ -2824,12 +2824,19 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
 
                 // const socket = new SockJS(`http://localhost:8080/ws`);
                 // const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
-                const springBaseUrl = backendConfig.springBaseUrl || 'http://localhost:8080';
-                let socket = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
-                if (backendToken) {
-                    socket += `&token=${encodeURIComponent(backendToken)}`;
+                const springBaseUrl = portConfig.springBaseUrl || 'http://localhost:8080';
+                // 使用 backendToken
+                const tokenParam = backendToken ? `&token=${encodeURIComponent(backendToken)}` : '';
+                let url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
+                if(backendToken){
+                     url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}${tokenParam}`;
+                }else {
+                    throw new Error('获取token失败')
                 }
+
+                const socket = new SockJS(url);
                 stompClient = Stomp.over(socket);
+
 
                 const token = localStorage.getItem('token'); // 从 localStorage 获取 token
 
@@ -2979,7 +2986,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
         //     pingTimeout: 120000      // 60秒未收到心跳则断开
         // });
         // const socketUrl = 'http://localhost:3000';
-        const socketUrl = backendConfig.localBaseUrl || 'http://localhost:3000';
+        const socketUrl = portConfig.localBaseUrl || 'http://localhost:3000';
         const options = {
             reconnection: true,
             reconnectionAttempts: 10,
@@ -3428,6 +3435,12 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 electronToken = await window.electronAPI.getElectronToken();
                 addLog('info', '已获取 Electron Token');
             }
+            backendToken = localStorage.getItem('token');
+            if (backendToken) {
+                addLog('info', '已获取后端登录Token');
+            } else {
+                addLog('warn', '未找到后端登录Token，请先登录');
+            }
             const excelSwitch = document.getElementById('generateExcelCheckbox');
             const outputDirContainer = document.getElementById('outputDirContainer');
 
@@ -3439,7 +3452,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 }
             }
             // 加载配置
-            await loadBackendConfig();
+            await loadPortConfig();
 
             toggleOutputDir();
             excelSwitch.addEventListener('change', toggleOutputDir);

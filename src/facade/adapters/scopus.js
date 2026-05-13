@@ -1,4 +1,5 @@
 const ScopusCrawler = require('../../crawlers/scopus-crawler');
+const {cleanupCaptchaDir} = require("../../utils/common-utils");
 
 function createScopusCrawlerFacade() {
   const crawler = new ScopusCrawler();
@@ -35,6 +36,8 @@ function createScopusCrawlerFacade() {
         await crawler.cleanup()
         throw error;
       } finally {
+        // 清理验证码临时目录
+        cleanupCaptchaDir(crawler.searchConfig?.CAPTCHA_DIR_NAME || 'captcha_temp', crawler.logger);
         // 无论成功还是失败，都要关闭浏览器并标记为未运行
         if (crawler.state.isRunning) {
           crawler.state.isRunning = false;

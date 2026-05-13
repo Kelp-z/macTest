@@ -1,4 +1,5 @@
 const WosCrawler = require('../../crawlers/wos-crawler');
+const {cleanupCaptchaDir} = require("../../utils/common-utils");
 
 function createWosCrawlerFacade() {
   const crawler = new WosCrawler();
@@ -29,6 +30,13 @@ function createWosCrawlerFacade() {
         crawler.state.isRunning = false;
         await crawler.cleanup();
         throw error;
+      }finally {
+        cleanupCaptchaDir(crawler.searchConfig?.CAPTCHA_DIR_NAME || 'captcha_temp', crawler.logger);
+        // 关闭浏览器并标记为未运行
+        if (crawler.state.isRunning) {
+          crawler.state.isRunning = false;
+          await crawler.cleanup();
+        }
       }
     },
 
