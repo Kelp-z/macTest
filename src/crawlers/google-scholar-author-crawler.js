@@ -3,7 +3,7 @@ const BaseCrawler = require('../core/base-crawler');
 const fs = require('fs');
 const path = require('path');
 const {humanClick, humanType, randomDelay} = require('../utils/playwright-utils');
-
+const { isAnyCaptchaPresent, handleAnyCaptcha } = require('../utils/crawler-utils');
 /**
  * Google Scholar 爬虫类
  * 继承自 BaseCrawler，实现具体的爬取逻辑
@@ -184,8 +184,8 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
         await this._randomDelay();
 
         // 检查验证码
-        if (await this._checkForCaptcha()) {
-            await this._handleCaptchaManually();
+        if (await isAnyCaptchaPresent(this.page)) {
+            await handleAnyCaptcha(this.page, this._getCaptchaContext());
         }
 
         // 输入搜索词
@@ -200,8 +200,8 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
         await this._randomDelay();
 
         // 再次检查验证码
-        if (await this._checkForCaptcha()) {
-            await this._handleCaptchaManually();
+        if (await isAnyCaptchaPresent(this.page)) {
+            await handleAnyCaptcha(this.page, this._getCaptchaContext());
         }
 
         // 查找所有作者档案链接
@@ -319,8 +319,8 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
             await targetPage.waitForLoadState('networkidle');
 
             // 检查验证码
-            if (await this._checkForCaptchaOnPage(targetPage)) {
-                await this._handleCaptchaManuallyOnPage(targetPage);
+            if (await isAnyCaptchaPresent(targetPage)) {
+                await handleAnyCaptcha(targetPage, this._getCaptchaContext());
             }
         } else {
             // 当前页面导航
@@ -331,8 +331,8 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
             targetPage = this.page;
 
             // 检查验证码
-            if (await this._checkForCaptcha()) {
-                await this._handleCaptchaManually();
+            if (await isAnyCaptchaPresent(targetPage)) {
+                await handleAnyCaptcha(targetPage, this._getCaptchaContext());
             }
         }
 
@@ -348,8 +348,8 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
             await this.page.goBack({ waitUntil: 'networkidle' });
 
             // 检查验证码
-            if (await this._checkForCaptcha()) {
-                await this._handleCaptchaManually();
+            if (await isAnyCaptchaPresent(this.page)) {
+                await handleAnyCaptcha(this.page, this._getCaptchaContext());
             }
         }
 
@@ -528,87 +528,98 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
     /**
      * 检查验证码
      */
-    async _checkForCaptcha() {
-        return await this._checkForCaptchaOnPage(this.page);
-    }
+    // async _checkForCaptcha() {
+    //     return await this._checkForCaptchaOnPage(this.page);
+    // }
 
     /**
      * 检查指定页面的验证码
      */
-    async _checkForCaptchaOnPage(page) {
-        const captchaSelectors = [
-            '#captcha-form',
-            'form[action*="captcha"]',
-            '.g-recaptcha',
-            'iframe[src*="recaptcha"]',
-            'div:has-text("请进行人机身份验证")',
-            'div:has-text("unusual traffic")'
-        ];
+    // async _checkForHumanCaptchaOnPage(page) {
+    //     const captchaSelectors = [
+    //         '#captcha-form',
+    //         'form[action*="captcha"]',
+    //         '.g-recaptcha',
+    //         'iframe[src*="recaptcha"]',
+    //         'div:has-text("请进行人机身份验证")',
+    //         'div:has-text("unusual traffic")'
+    //     ];
+    //
+    //     for (const selector of captchaSelectors) {
+    //         try {
+    //             const element = await page.$(selector);
+    //             if (element && await element.isVisible()) {
+    //                 return true;
+    //             }
+    //         } catch (error) {
+    //             // 忽略错误
+    //         }
+    //     }
+    //
+    //     const url = page.url();
+    //     if (url.includes('sorry') || url.includes('captcha')) {
+    //         return true;
+    //     }
+    //
+    //     return false;
+    // }
 
-        for (const selector of captchaSelectors) {
-            try {
-                const element = await page.$(selector);
-                if (element && await element.isVisible()) {
-                    return true;
-                }
-            } catch (error) {
-                // 忽略错误
-            }
-        }
 
-        const url = page.url();
-        if (url.includes('sorry') || url.includes('captcha')) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * 手动处理验证码
-     */
-    async _handleCaptchaManually() {
-        await this._handleCaptchaManuallyOnPage(this.page);
-    }
 
     /**
      * 在指定页面上手动处理验证码
      */
-    async _handleCaptchaManuallyOnPage(page) {
-        this.logger.warn('⚠️ 检测到人机验证，请手动完成');
-
-        const screenshotPath = await this.browserManager.takeScreenshot(
-            page,
-            'captcha',
-            path.join(this.currentOutputDir, 'screenshots')
-        );
-
-        this.logger.info('请在浏览器窗口中完成验证...');
-
-        let waitTime = 0;
-        const maxWaitTime = 600000;
-        const checkInterval = 5000;
-
-        while (waitTime < maxWaitTime) {
-            await page.waitForTimeout(checkInterval);
-            waitTime += checkInterval;
-
-            if (!await this._checkForCaptchaOnPage(page)) {
-                try {
-                    const searchInput = await page.$('input[name="q"]');
-                    if (searchInput) {
-                        this.logger.info('✅ 验证已完成');
-                        return;
-                    }
-                } catch (error) {
-                    this.logger.info('✅ 页面已恢复正常');
-                    return;
-                }
-            }
-        }
-
-        throw new Error('验证码处理超时');
-    }
+    // async _handleCaptchaManuallyOnPage(page) {
+    //     this.logger.warn('⚠️ 检测到人机验证，请手动完成');
+    //
+    //     const screenshotPath = await this.browserManager.takeScreenshot(
+    //         page,
+    //         'captcha',
+    //         path.join(this.currentOutputDir, 'screenshots')
+    //     );
+    //
+    //     this.logger.info('请在浏览器窗口中完成验证...');
+    //
+    //     // 发送 Socket.IO 事件通知前端
+    //     const io = require('../infrastructure/socket-io-manager').getIo();
+    //     if (io) {
+    //         io.emit('user-intervention-required', {
+    //             type: 'captcha-manual',
+    //             source: 'google',
+    //             data: {
+    //                 message: '请在弹出的浏览器窗口中完成人机验证',
+    //                 instruction: '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
+    //                 screenshotPath: screenshotPath ? `/screenshots/${path.basename(screenshotPath)}` : null,
+    //                 timestamp: Date.now()
+    //             }
+    //         });
+    //         this.logger.info('已发送人机验证提醒到前端');
+    //     }
+    //
+    //     let waitTime = 0;
+    //     const maxWaitTime = 600000;
+    //     const checkInterval = 5000;
+    //
+    //     while (waitTime < maxWaitTime) {
+    //         await page.waitForTimeout(checkInterval);
+    //         waitTime += checkInterval;
+    //
+    //         if (!await isAnyCaptchaPresent(page)) {
+    //             try {
+    //                 const searchInput = await page.$('input[name="q"]');
+    //                 if (searchInput) {
+    //                     this.logger.info('✅ 验证已完成');
+    //                     return;
+    //                 }
+    //             } catch (error) {
+    //                 this.logger.info('✅ 页面已恢复正常');
+    //                 return;
+    //             }
+    //         }
+    //     }
+    //
+    //     throw new Error('验证码处理超时');
+    // }
 
     /**
      * 随机延迟
@@ -616,6 +627,16 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
     async _randomDelay(min = 1000, max = 3000) {
         const delay = Math.floor(Math.random() * (max - min + 1)) + min;
         await this.page.waitForTimeout(delay);
+    }
+    // 获取验证码上下文
+    _getCaptchaContext() {
+        return {
+            logger: this.logger,
+            browserManager: this.browserManager,
+            getCurrentOutputDir: () => this.currentOutputDir,
+            shouldStopRef: () => this.shouldStop,
+            isRunningRef: () => this.state?.isRunning ?? true
+        };
     }
 }
 module.exports = GoogleScholarAuthorCrawler;

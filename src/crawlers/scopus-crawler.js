@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { humanClick, humanType } = require('../utils/playwright-utils');
 const { academicCatLogin, academicCatNavigateToTarget } = require('../utils/academic-cat-utils');
+const {getSafeProjectPath} = require("../utils/common-utils");
 
 /**
  * Scopus 论文爬虫类
@@ -139,6 +140,7 @@ class ScopusCrawler extends BaseCrawler {
             await promise;
             this.logger.info('用户已确认手动操作完成');
         };
+        const captchaDir = getSafeProjectPath(this.searchConfig.CAPTCHA_DIR_NAME);
 
         // 使用学术猫登录（支持验证码）
         await academicCatLogin(
@@ -147,7 +149,8 @@ class ScopusCrawler extends BaseCrawler {
                 BASE_URL: this.searchConfig.BASE_URL,
                 USER_NAME: this.credentials.userName,
                 PASSWORD: this.credentials.password,
-                CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
+                // CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
+                CAPTCHA_DIR: captchaDir
             },
             onCaptchaRequired,
             (msg) => this.logger.info(msg),
@@ -184,17 +187,19 @@ class ScopusCrawler extends BaseCrawler {
             filterPattern: 'scopus',
             checkReady: this._waitForScopusReady.bind(this)
         };
-        const screenshotDir = path.join(process.cwd(), this.searchConfig.SCREENSHOT_DIR_NAME || 'output/screenshots');
+        const screenshotDir = getSafeProjectPath(this.searchConfig.SCREENSHOT_DIR_NAME || 'output/screenshots');
         if (!fs.existsSync(screenshotDir)) {
             fs.mkdirSync(screenshotDir, { recursive: true });
         }
+
+        const captchaDir = getSafeProjectPath(this.searchConfig.CAPTCHA_DIR_NAME);
         // 使用学术猫导航工具（支持手动干预）
         const scopusPage = await academicCatNavigateToTarget(
             this.page,
             this.context,
             {
                 BASE_URL: this.searchConfig.BASE_URL,
-                CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME),
+                CAPTCHA_DIR: captchaDir,
                 SCREENSHOT_DIR_NAME: screenshotDir
             },
             target,

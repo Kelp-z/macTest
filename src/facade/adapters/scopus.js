@@ -1,6 +1,6 @@
 const ScopusCrawler = require('../../crawlers/scopus-crawler');
 const {cleanupCaptchaDir} = require("../../utils/common-utils");
-
+const { app } = require('electron');
 function createScopusCrawlerFacade() {
   const crawler = new ScopusCrawler();
   return {

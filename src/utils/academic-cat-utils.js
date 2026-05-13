@@ -471,7 +471,7 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
 
     // 手动模式
     if (!targetPage) {
-        addLog(`\n⚠️ 所有 ${target.text} 镜像站点自动尝试均失败。`);
+        addLog(`\n所有 ${target.text} 镜像站点自动尝试均失败。`);
         addLog(`请手动在浏览器中打开一个可用的 ${target.text} 页面（例如点击任意镜像链接）。`);
 
         while (true) {
@@ -506,12 +506,12 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
             const url = candidatePage.url();
             const title = await candidatePage.title().catch(() => '无法获取标题');
 
-            // 截图
-            const screenshotPath = path.join(config.SCREENSHOT_DIR_NAME, `manual-${Date.now()}.png`);
-            try {
-                await candidatePage.screenshot({ path: screenshotPath, fullPage: true });
-                addLog(`截图已保存: ${screenshotPath}`);
-            } catch (e) {}
+            // // 截图
+            // const screenshotPath = path.join(config.SCREENSHOT_DIR_NAME, `manual-${Date.now()}.png`);
+            // try {
+            //     await candidatePage.screenshot({ path: screenshotPath, fullPage: true });
+            //     addLog(`截图已保存: ${screenshotPath}`);
+            // } catch (e) {}
 
             addLog(`手动打开的页面信息: URL=${url}, 标题=${title}`);
             if (!url || url === 'about:blank') {
@@ -523,7 +523,7 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
                 await candidatePage.waitForLoadState('networkidle', { timeout: 30000 });
                 const isValid = await target.checkReady(candidatePage, 60000);
                 if (!isValid) throw new Error(`不是 ${target.text} 页面`);
-                addLog(`✅ 手动确认 ${target.text} 页面: ${url}`);
+                addLog(`手动确认 ${target.text} 页面: ${url}`);
                 targetPage = candidatePage;
                 if (typeof setManualMode === 'function') {
                     setManualMode(false);

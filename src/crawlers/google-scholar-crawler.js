@@ -2,7 +2,7 @@
 const BaseCrawler = require('../core/base-crawler');
 const fs = require('fs');
 const path = require('path');
-
+const { isAnyCaptchaPresent, handleAnyCaptcha } = require('../utils/crawler-utils');
 const {humanClick, humanType, randomDelay} = require('../utils/playwright-utils');
 
 /**
@@ -276,6 +276,7 @@ class GoogleScholarCrawler extends BaseCrawler {
                 // 记录失败时也要关联原始论文
                 const failedPaper = originalPapers[i] || {title: keyword};
                 this._recordFailedPaper(failedPaper, error.message);
+
             }
 
             // 随机延迟，避免被封
@@ -343,10 +344,23 @@ class GoogleScholarCrawler extends BaseCrawler {
                     });
 
                 // 检查验证码
-                if (await this._checkForCaptchaOnPage(newPage)) {
-                    this.logger.warn(`引用页面检测到人机验证，需要手动处理`);
+                // if (await this._checkForHumanCaptchaOnPage(newPage)) {
+                //     this.logger.warn(`引用页面检测到人机验证，需要手动处理`);
+                //     try {
+                //         await this._handleHumanCaptchaManuallyOnPage(newPage);
+                //         this.logger.info(`引用页面验证码已解决，继续抓取`);
+                //         await newPage.waitForTimeout(3000);
+                //     } catch (captchaError) {
+                //         this.logger.error(`引用页面验证码处理失败: ${captchaError.message}，跳过该引用链接`);
+                //         failedCount++;
+                //         continue;
+                //     }
+                // }
+                if (await isAnyCaptchaPresent(newPage)) {
+                    this.logger.warn(`引用页面检测到验证，需要手动处理`);
+
                     try {
-                        await this._handleCaptchaManuallyOnPage(newPage);
+                        await handleAnyCaptcha(newPage, this._getCaptchaContext());
                         this.logger.info(`引用页面验证码已解决，继续抓取`);
                         await newPage.waitForTimeout(3000);
                     } catch (captchaError) {
@@ -355,7 +369,6 @@ class GoogleScholarCrawler extends BaseCrawler {
                         continue;
                     }
                 }
-
                 await newPage.waitForTimeout(3000);
 
                 // 分页处理
@@ -452,10 +465,11 @@ class GoogleScholarCrawler extends BaseCrawler {
                                         await newPage.waitForTimeout(5000);
                                     });
 
-                                if (await this._checkForCaptchaOnPage(newPage)) {
+                                if (await isAnyCaptchaPresent(newPage)) {
                                     this.logger.warn(`下一页检测到人机验证，停止翻页`);
                                     break;
                                 }
+
 
                                 await newPage.waitForTimeout(3000);
                                 currentPageNum++;
@@ -491,95 +505,199 @@ class GoogleScholarCrawler extends BaseCrawler {
 
 
     /**
-     * 检查指定页面的验证码
+     * 检查指定页面的人机验证
      */
-    async _checkForCaptchaOnPage(page) {
-        const captchaSelectors = [
-            '#captcha-form',
-            'form[action*="captcha"]',
-            '.g-recaptcha',
-            'iframe[src*="recaptcha"]',
-            'div:has-text("请进行人机身份验证")',
-            'div:has-text("unusual traffic")'
-        ];
-
-        for (const selector of captchaSelectors) {
-            try {
-                const element = await page.$(selector);
-                if (element && await element.isVisible()) {
-                    return true;
-                }
-            } catch (error) {
-                // 忽略错误
-            }
-        }
-
-        const url = page.url();
-        if (url.includes('sorry') || url.includes('captcha')) {
-            return true;
-        }
-
-        return false;
-    }
-
+    // async _checkForHumanCaptchaOnPage(page) {
+    //     const captchaSelectors = [
+    //         '#captcha-form',
+    //         'form[action*="captcha"]',
+    //         '.g-recaptcha',
+    //         'iframe[src*="recaptcha"]',
+    //         'div:has-text("请进行人机身份验证")',
+    //         'div:has-text("unusual traffic")'
+    //     ];
+    //
+    //     for (const selector of captchaSelectors) {
+    //         try {
+    //             const element = await page.$(selector);
+    //             if (element && await element.isVisible()) {
+    //                 return true;
+    //             }
+    //         } catch (error) {
+    //             // 忽略错误
+    //         }
+    //     }
+    //
+    //     const url = page.url();
+    //     if (url.includes('sorry') || url.includes('captcha')) {
+    //         return true;
+    //     }
+    //
+    //     return false;
+    // }
+    /**
+     * 检测当前页面是否为验证码页面
+     * @param {Page} page - Playwright 页面对象
+     * @returns {Promise<boolean>}
+     */
+    // async  _checkForCaptchaPage(page) {
+    //     const url = page.url();
+    //     // URL 包含 /sorry/index 直接判定
+    //     if (url.includes('/sorry/index')) return true;
+    //
+    //     // 检查页面文本特征
+    //     const bodyText = await page.textContent('body');
+    //     return bodyText.includes('请键入下图显示的字符以继续操作');
+    // }
     /**
      * 在指定页面上手动处理验证码
      */
-    async _handleCaptchaManuallyOnPage(page) {
-        this.logger.warn('⚠️ 检测到人机验证，请手动完成');
+    // async _handleHumanCaptchaManuallyOnPage(page) {
+    //     this.logger.warn('⚠️ 检测到人机验证，请手动完成');
+    //
+    //     const screenshotPath = await this.browserManager.takeScreenshot(
+    //         page,
+    //         'captcha',
+    //         path.join(this.currentOutputDir, 'screenshots')
+    //     );
+    //
+    //     // 发送 Socket.IO 事件通知前端
+    //     const io = require('../infrastructure/socket-io-manager').getIo();
+    //     if (io) {
+    //         io.emit('user-intervention-required', {
+    //             type: 'captcha-manual',
+    //             source: 'google',
+    //             data: {
+    //                 message: '请在弹出的浏览器窗口中完成人机验证',
+    //                 instruction: '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
+    //                 screenshotPath: screenshotPath ? `/screenshots/${path.basename(screenshotPath)}` : null,
+    //                 timestamp: Date.now()
+    //             }
+    //         });
+    //         this.logger.info('已发送人机验证提醒到前端');
+    //     }
+    //     this.logger.info('请在浏览器窗口中完成验证...');
+    //
+    //     let waitTime = 0;
+    //     const maxWaitTime = 600000; //10分钟超时
+    //     const checkInterval = 5000;
+    //
+    //     while (waitTime < maxWaitTime) {
+    //
+    //         if (this.shouldStop || !this.state.isRunning) {
+    //             throw new Error('用户停止任务');
+    //         }
+    //         await page.waitForTimeout(checkInterval);
+    //         waitTime += checkInterval;
+    //
+    //         if (!await this._checkForHumanCaptchaOnPage(page)) {
+    //             try {
+    //                 const searchResults = await page.$('#gs_res_ccl_mid');
+    //                 if (searchResults) {
+    //                     this.logger.info('验证已完成');
+    //                     return;
+    //                 }
+    //             } catch (error) {
+    //                 this.logger.info('页面已恢复正常');
+    //                 return;
+    //             }
+    //         }
+    //     }
+    //
+    //     throw new Error('验证码处理超时');
+    // }
 
-        const screenshotPath = await this.browserManager.takeScreenshot(
-            page,
-            'captcha',
-            path.join(this.currentOutputDir, 'screenshots')
-        );
+    // /**
+    //  * 统一检测所有类型的验证码（人机验证 + 传统字符验证码）
+    //  * @param {Page} page - 要检测的页面，默认 this.page
+    //  * @returns {Promise<boolean>} 是否存在任何验证码
+    //  */
+    // async isAnyCaptchaPresent(page = null) {
+    //     const targetPage = page || this.page;
+    //
+    //     // 检测传统字符验证码（URL 或页面文本）
+    //     const url = targetPage.url();
+    //     if (url.includes('/sorry/index')) return true;
+    //
+    //     try {
+    //         const bodyText = await targetPage.textContent('body');
+    //         if (bodyText.includes('请键入下图显示的字符以继续操作')) return true;
+    //     } catch (e) {}
+    //
+    //     // 检测人机验证（原有逻辑）
+    //     const captchaSelectors = [
+    //         '#captcha-form',
+    //         'form[action*="captcha"]',
+    //         '.g-recaptcha',
+    //         'iframe[src*="recaptcha"]',
+    //         'div:has-text("请进行人机身份验证")',
+    //         'div:has-text("unusual traffic")'
+    //     ];
+    //     for (const selector of captchaSelectors) {
+    //         try {
+    //             const element = await targetPage.$(selector);
+    //             if (element && await element.isVisible()) return true;
+    //         } catch (e) {}
+    //     }
+    //     return false;
+    // }
 
-        // 发送 Socket.IO 事件通知前端
-        const io = require('../infrastructure/socket-io-manager').getIo();
-        if (io) {
-            io.emit('user-intervention-required', {
-                type: 'captcha-manual',
-                source: 'google',
-                data: {
-                    message: '请在弹出的浏览器窗口中完成人机验证',
-                    instruction: '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
-                    screenshotPath: screenshotPath ? `/screenshots/${path.basename(screenshotPath)}` : null,
-                    timestamp: Date.now()
-                }
-            });
-            this.logger.info('已发送人机验证提醒到前端');
-        }
-        this.logger.info('请在浏览器窗口中完成验证...');
-
-        let waitTime = 0;
-        const maxWaitTime = 600000; //10分钟超时
-        const checkInterval = 5000;
-
-        while (waitTime < maxWaitTime) {
-
-            if (this.shouldStop || !this.state.isRunning) {
-                throw new Error('用户停止任务');
-            }
-            await page.waitForTimeout(checkInterval);
-            waitTime += checkInterval;
-
-            if (!await this._checkForCaptchaOnPage(page)) {
-                try {
-                    const searchResults = await page.$('#gs_res_ccl_mid');
-                    if (searchResults) {
-                        this.logger.info('验证已完成');
-                        return;
-                    }
-                } catch (error) {
-                    this.logger.info('页面已恢复正常');
-                    return;
-                }
-            }
-        }
-
-        throw new Error('验证码处理超时');
-    }
-
+    /**
+     * 统一处理所有验证码（自动判断类型并调用相应处理）
+     * @param {Page} page - 需要处理验证码的页面
+     * @returns {Promise<void>}
+     */
+    // async handleAnyCaptcha(page = null) {
+    //     const targetPage = page || this.page;
+    //
+    //     // 先检测传统字符验证码
+    //     const url = targetPage.url();
+    //     if (url.includes('/sorry/index')) {
+    //         await this._handleTraditionalCaptchaOnPage(targetPage);
+    //         return;
+    //     }
+    //
+    //     let bodyText = '';
+    //     try {
+    //         bodyText = await targetPage.textContent('body');
+    //     } catch (e) {}
+    //     if (bodyText.includes('请键入下图显示的字符以继续操作')) {
+    //         await this._handleTraditionalCaptchaOnPage(targetPage);
+    //         return;
+    //     }
+    //
+    //     // 否则按人机验证处理
+    //     await this._handleCaptchaManuallyOnPage(targetPage);
+    // }
+    // async _handleTraditionalCaptchaOnPage(page) {
+    //     this.logger.warn('⚠️ 检测到字符验证码，等待用户输入');
+    //     // 发送前端弹窗，轮询等待验证码消失
+    //     const io = require('../infrastructure/socket-io-manager').getIo();
+    //     if (io) {
+    //         io.emit('user-intervention-required', {
+    //             type: 'captcha-manual',
+    //             source: 'google',
+    //             data: {
+    //                 message: '请在浏览器窗口中输入验证码',
+    //                 instruction: '请手动输入验证码并提交，完成后爬虫将自动继续',
+    //                 timestamp: Date.now()
+    //             }
+    //         });
+    //     }
+    //     let waitTime = 0;
+    //     const maxWaitTime = 600000;
+    //     const checkInterval = 5000;
+    //     while (waitTime < maxWaitTime) {
+    //         if (this.shouldStop) throw new Error('用户停止任务');
+    //         await page.waitForTimeout(checkInterval);
+    //         waitTime += checkInterval;
+    //         if (!await isAnyCaptchaPresent(page)) {
+    //             this.logger.info('✅ 字符验证码已解决');
+    //             return;
+    //         }
+    //     }
+    //     throw new Error('字符验证码处理超时');
+    // }
     /**
      * 从指定页面提取引用链接
      */
@@ -757,8 +875,8 @@ class GoogleScholarCrawler extends BaseCrawler {
         });
 
         // 检查验证码
-        if (await this._checkForCaptcha()) {
-            await this._handleCaptchaManually();
+        if (await isAnyCaptchaPresent(this.page)) {
+            await handleAnyCaptcha(this.page, this._getCaptchaContext());
         }
 
         // 输入关键词
@@ -1304,78 +1422,78 @@ class GoogleScholarCrawler extends BaseCrawler {
     /**
      * 检查验证码
      */
-    async _checkForCaptcha() {
-        const captchaSelectors = [
-            '#captcha-form',
-            'form[action*="captcha"]',
-            '.g-recaptcha',
-            'iframe[src*="recaptcha"]',
-            'div:has-text("请进行人机身份验证")',
-            'div:has-text("unusual traffic")'
-        ];
-
-        for (const selector of captchaSelectors) {
-            try {
-                const element = await this.page.$(selector);
-                if (element && await element.isVisible()) {
-                    return true;
-                }
-            } catch (error) {
-                // 忽略错误
-            }
-        }
-
-        // 检查 URL
-        const url = this.page.url();
-        if (url.includes('sorry') || url.includes('captcha')) {
-            return true;
-        }
-
-        return false;
-    }
+    // async _checkForCaptcha() {
+    //     const captchaSelectors = [
+    //         '#captcha-form',
+    //         'form[action*="captcha"]',
+    //         '.g-recaptcha',
+    //         'iframe[src*="recaptcha"]',
+    //         'div:has-text("请进行人机身份验证")',
+    //         'div:has-text("unusual traffic")'
+    //     ];
+    //
+    //     for (const selector of captchaSelectors) {
+    //         try {
+    //             const element = await this.page.$(selector);
+    //             if (element && await element.isVisible()) {
+    //                 return true;
+    //             }
+    //         } catch (error) {
+    //             // 忽略错误
+    //         }
+    //     }
+    //
+    //     // 检查 URL
+    //     const url = this.page.url();
+    //     if (url.includes('sorry') || url.includes('captcha')) {
+    //         return true;
+    //     }
+    //
+    //     return false;
+    // }
 
     /**
      * 手动处理验证码
      */
-    async _handleCaptchaManually() {
-        this.logger.warn('⚠️ 检测到人机验证，请手动完成');
-
-        // 截图
-        const screenshotPath = await this.browserManager.takeScreenshot(
-            this.page,
-            'captcha',
-            path.join(this.currentOutputDir || process.cwd(), 'screenshots')
-        );
-
-        // 等待用户手动完成（这里可以集成 intervention-session）
-        this.logger.info('请在浏览器窗口中完成验证...');
-
-        // 轮询检查验证是否完成
-        let waitTime = 0;
-        const maxWaitTime = 600000; // 10分钟
-        const checkInterval = 5000;
-
-        while (waitTime < maxWaitTime) {
-            await this.page.waitForTimeout(checkInterval);
-            waitTime += checkInterval;
-
-            if (!await this._checkForCaptcha()) {
-                // 检查是否有搜索结果
-                try {
-                    const searchResults = await this.page.$('#gs_res_ccl_mid');
-                    if (searchResults) {
-                        this.logger.info('✅ 验证已完成');
-                        return;
-                    }
-                } catch (error) {
-                    this.logger.info('✅ 页面已恢复正常');
-                    return;
-                }
-            }
-        }
-
-        throw new Error('验证码处理超时');
-    }
+    // async _handleCaptchaManually() {
+    //     this.logger.warn('⚠️ 检测到人机验证，请手动完成');
+    //
+    //     // 截图
+    //     const screenshotPath = await this.browserManager.takeScreenshot(
+    //         this.page,
+    //         'captcha',
+    //         path.join(this.currentOutputDir || process.cwd(), 'screenshots')
+    //     );
+    //
+    //     // 等待用户手动完成（这里可以集成 intervention-session）
+    //     this.logger.info('请在浏览器窗口中完成验证...');
+    //
+    //     // 轮询检查验证是否完成
+    //     let waitTime = 0;
+    //     const maxWaitTime = 600000; // 10分钟
+    //     const checkInterval = 5000;
+    //
+    //     while (waitTime < maxWaitTime) {
+    //         await this.page.waitForTimeout(checkInterval);
+    //         waitTime += checkInterval;
+    //
+    //         if (!await this._checkForCaptcha()) {
+    //             // 检查是否有搜索结果
+    //             try {
+    //                 const searchResults = await this.page.$('#gs_res_ccl_mid');
+    //                 if (searchResults) {
+    //                     this.logger.info('✅ 验证已完成');
+    //                     return;
+    //                 }
+    //             } catch (error) {
+    //                 this.logger.info('✅ 页面已恢复正常');
+    //                 return;
+    //             }
+    //         }
+    //     }
+    //
+    //     throw new Error('验证码处理超时');
+    // }
 
     /**
      * 等待搜索结果或验证码
@@ -1383,20 +1501,17 @@ class GoogleScholarCrawler extends BaseCrawler {
     async _waitForSearchOrCaptcha(timeout = 30000) {
         try {
             await this.page.waitForTimeout(3000);
-
-            if (await this._checkForCaptcha()) {
-                await this._handleCaptchaManually();
+            if (await isAnyCaptchaPresent(this.page)) {
+                await handleAnyCaptcha(this.page, this._getCaptchaContext());
             }
-
-            await this.page.waitForSelector('#gs_res_ccl_mid', {timeout});
+            await this.page.waitForSelector('#gs_res_ccl_mid', { timeout });
         } catch (error) {
-            if (await this._checkForCaptcha()) {
-                await this._handleCaptchaManually();
+            if (await isAnyCaptchaPresent(this.page)) {
+                await handleAnyCaptcha(this.page, this._getCaptchaContext());
                 await this._waitForSearchOrCaptcha(timeout);
             }
         }
     }
-
     /**
      * 提取标题
      */
@@ -1596,6 +1711,15 @@ class GoogleScholarCrawler extends BaseCrawler {
     async _randomDelay(min = 1000, max = 3000) {
         const delay = Math.floor(Math.random() * (max - min + 1)) + min;
         await this.page.waitForTimeout(delay);
+    }
+    _getCaptchaContext() {
+        return {
+            logger: this.logger,
+            browserManager: this.browserManager,
+            getCurrentOutputDir: () => this.currentOutputDir,
+            shouldStopRef: () => this.shouldStop,
+            isRunningRef: () => this.state?.isRunning ?? true
+        };
     }
 }
 

@@ -39,6 +39,20 @@ function ensureDir(dirPath) {
         fs.mkdirSync(dirPath, { recursive: true });
     }
 }
+/**
+ * 获取安全的项目路径（兼容开发环境和 Electron 打包环境）
+ * @param {string} relativePath - 相对路径
+ * @returns {string} 绝对路径
+ */
+function getSafeProjectPath(relativePath) {
+    // 在 Electron 环境中使用 app.getPath('userData')
+    if (process.versions.electron) {
+        const { app } = require('electron');
+        return path.join(app.getPath('userData'), relativePath);
+    }
+    // 开发环境使用 process.cwd()
+    return path.join(process.cwd(), relativePath);
+}
 
 /**
  * 递归检查目录是否为空
@@ -201,6 +215,7 @@ module.exports = {
     calculateStringSimilarity,
     cleanupCaptchaDir,
     ensureDir,
+    getSafeProjectPath,
     isDirectoryEmpty,
     cleanEmptyDirectory
 };

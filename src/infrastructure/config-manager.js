@@ -1,14 +1,29 @@
 // src/infrastructure/config-manager.js
 const fs = require('fs');
 const path = require('path');
+const { app } = require('electron');
 
 class ConfigManager {
     constructor() {
         this.config = null;
-        this.configPath = path.join(process.cwd(), 'config.json');
+        this.configPath = this._getConfigPath();
         this._loadConfig();
     }
-
+    /**
+     * 获取配置文件路径（区分开发/生产环境）
+     * @returns {string}
+     */
+    _getConfigPath() {
+        const isPackaged = app.isPackaged;
+        if (isPackaged) {
+            // 生产环境：config.json 放在 exe 同级目录（由 extraFiles 释放）
+            const exeDir = path.dirname(app.getPath('exe'));
+            return path.join(exeDir, 'config.json');
+        } else {
+            // 开发环境：保持原逻辑，从项目根目录读取
+            return path.join(process.cwd(), 'config.json');
+        }
+    }
     /**
      * 加载配置文件
      */
@@ -17,9 +32,9 @@ class ConfigManager {
             if (fs.existsSync(this.configPath)) {
                 const raw = fs.readFileSync(this.configPath, 'utf8');
                 this.config = JSON.parse(raw);
-                console.log('✓ 已加载配置文件:', this.configPath);
+                console.log('已加载配置文件:', this.configPath);
             } else {
-                console.warn('⚠ 配置文件不存在，使用默认配置');
+                console.warn('配置文件不存在，使用默认配置');
                 this.config = {};
             }
         } catch (error) {
@@ -137,7 +152,7 @@ class ConfigManager {
         try {
             fs.writeFileSync(this.configPath, JSON.stringify(newConfig, null, 2), 'utf8');
             this.config = newConfig;
-            console.log(' 配置已保存');
+            console.log('配置已保存');
         } catch (error) {
             console.error(`保存配置失败: ${error.message}`);
             throw error;

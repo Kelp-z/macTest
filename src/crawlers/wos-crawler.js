@@ -6,6 +6,7 @@ const { humanClick, humanType } = require('../utils/playwright-utils');
 const { academicCatLogin, academicCatNavigateToTarget } = require('../utils/academic-cat-utils');
 const { checkForServerError } = require('../crawlers/wos-author-crawler');
 const configManager = require("../infrastructure/config-manager");
+const { getSafeProjectPath } = require('../utils/common-utils');
 
 /**
  * wos 论文爬虫类
@@ -130,7 +131,7 @@ class WosCrawler extends BaseCrawler {
             await promise;
             this.logger.info('用户已确认手动操作完成');
         };
-
+        const captchaDir = getSafeProjectPath(this.searchConfig.CAPTCHA_DIR_NAME);
         // 使用学术猫登录
         await academicCatLogin(
             this.page,
@@ -138,7 +139,8 @@ class WosCrawler extends BaseCrawler {
                 BASE_URL: this.searchConfig.BASE_URL,
                 USER_NAME: this.credentials.userName,
                 PASSWORD: this.credentials.password,
-                CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
+                // CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
+                CAPTCHA_DIR: captchaDir
             },
             onCaptchaRequired,
             (msg) => this.logger.info(msg),
@@ -175,17 +177,20 @@ class WosCrawler extends BaseCrawler {
             checkReady: this._waitForWosReady.bind(this)
         };
 
-        const screenshotDir = path.join(process.cwd(), this.searchConfig.SCREENSHOT_DIR_NAME || 'output/screenshots');
+        const screenshotDir = getSafeProjectPath(this.searchConfig.SCREENSHOT_DIR_NAME || 'output/screenshots');
         if (!fs.existsSync(screenshotDir)) {
             fs.mkdirSync(screenshotDir, { recursive: true });
         }
+
+        const captchaDir = getSafeProjectPath(this.searchConfig.CAPTCHA_DIR_NAME);
+
 
         const wosPage = await academicCatNavigateToTarget(
             this.page,
             this.context,
             {
                 BASE_URL: this.searchConfig.BASE_URL,
-                CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME),
+                CAPTCHA_DIR: captchaDir,
                 SCREENSHOT_DIR_NAME: screenshotDir
             },
             target,
@@ -580,7 +585,7 @@ class WosCrawler extends BaseCrawler {
                 });
             }
         }
-
+        this.results = results;
         return results;
     }
 
@@ -863,8 +868,9 @@ class WosCrawler extends BaseCrawler {
     async extractData(searchResults) {
         this.logger.info('开始整理提取的数据');
 
+
         const successList = searchResults.filter(r => r.isRecruit === 'true');
-        const failedList = searchResults.filter(r => r.isRecruit === 'false');
+        const failedList = searchResults.filter(r => r.isRecruit === 'false' || r.remark);
 
         return {
             successList: successList,
@@ -944,5 +950,23 @@ class WosCrawler extends BaseCrawler {
 
         this.logger.info('WoS 收录检测爬虫状态已重置');
     }
+    /**
+     * 检查是否有服务器错误
+     * @returns {Promise<boolean>} - 是否有服务器错误
+     */
+    async checkForServerError() {
+        try {
+            const content = await this.page.content();
+            return content.includes('Server.unexpectedError') ||
+                content.includes('Unexpected Error') ||
+                content.includes('服务器错误') ||
+                content.includes('Service Unavailable');
+        } catch (error) {
+            this.logger.warn(`检查服务器错误失败: ${error.message}`);
+            return false;
+        }
+    }
+
+
 }
 module.exports = WosCrawler;

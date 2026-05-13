@@ -2,7 +2,8 @@
 const BaseCrawler = require('../core/base-crawler');
 const fs = require('fs');
 const path = require('path');
-const { humanClick, humanType } = require('../utils/playwright-utils');
+const {humanClick, humanType} = require('../utils/playwright-utils');
+
 /**
  * WoS (Web of Science) 作者爬虫类
  */
@@ -41,10 +42,11 @@ class WosAuthorCrawler extends BaseCrawler {
             timestamp
         );
         if (!fs.existsSync(this.currentOutputDir)) {
-            fs.mkdirSync(this.currentOutputDir, { recursive: true });
+            fs.mkdirSync(this.currentOutputDir, {recursive: true});
         }
         this.logger.info(`输出目录已创建: ${this.currentOutputDir}`);
     }
+
     /**
      * 停止爬虫
      */
@@ -76,16 +78,21 @@ class WosAuthorCrawler extends BaseCrawler {
 
         this.logger.info('WoS 作者爬虫状态已重置');
     }
-    async login(){
+
+    async login() {
         this.logger.info('正在访问WoS 登录页面');
-        await this.page.goto(this.searchConfig.LOGIN_URL,{
+        await this.page.goto(this.searchConfig.LOGIN_URL, {
             waitUntil: 'domcontentloaded',
             timeout: 120000
         })
         // 等待登录表单加载
-        await this.page.waitForSelector('input[formcontrolname="email"]', { timeout: 15000 });
-        await this.page.waitForSelector('input[formcontrolname="password"]', { timeout: 15000 });
+        await this.page.waitForSelector('input[formcontrolname="email"]', {timeout: 15000});
+        await this.page.waitForSelector('input[formcontrolname="password"]', {timeout: 15000});
 
+
+        if (this.page.isClosed()) {
+            throw new Error('浏览器窗口已关闭');
+        }
         // 检查是否有有效凭证
         if (this.credentials.email && this.credentials.password) {
             this.logger.info('使用自动登录模式');
@@ -110,6 +117,7 @@ class WosAuthorCrawler extends BaseCrawler {
         await this._handlePostLoginInterventions();
 
     }
+
     /**
      * 自动登录
      */
@@ -118,6 +126,9 @@ class WosAuthorCrawler extends BaseCrawler {
         let lastError = null;
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            if (!this.state.isRunning) {
+                throw new Error('爬虫已停止，自动登录中断');
+            }
             try {
                 this.logger.info(`自动登录尝试 ${attempt}/${maxRetries}...`);
 
@@ -189,10 +200,10 @@ class WosAuthorCrawler extends BaseCrawler {
                 if (attempt < maxRetries) {
                     this.logger.info(`等待 3 秒后重试...`);
                     await this.safeDelay(3000, 3000);
-
+                    if (!this.state.isRunning) break;
                     // 刷新页面，重新开始
                     try {
-                        await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                        await this.page.reload({waitUntil: 'domcontentloaded', timeout: 30000});
                         await this.safeDelay(2000, 3000);
                     } catch (reloadError) {
                         this.logger.warn(`页面刷新失败: ${reloadError.message}`);
@@ -204,6 +215,7 @@ class WosAuthorCrawler extends BaseCrawler {
         // 所有重试都失败
         throw new Error(`自动登录失败（已重试 ${maxRetries} 次）。请验证账号密码是否正确。\n最后错误: ${lastError?.message}`);
     }
+
     /**
      * 等待登录结果（检测页面跳转或状态变化）
      * @param {number} timeoutMs - 超时时间（毫秒）
@@ -263,10 +275,14 @@ class WosAuthorCrawler extends BaseCrawler {
         this.logger.warn('等待登录结果超时');
         return false;
     }
+
     /**
      * 手动登录（等待用户操作）
      */
     async _manualLogin() {
+        if (!this.state.isRunning) {
+            throw new Error('爬虫已停止，登录中断');
+        }
         this.logger.warn('请在浏览器中手动输入账号密码并点击登录');
 
         this._sendManualLoginNotification().catch(err => {
@@ -276,17 +292,30 @@ class WosAuthorCrawler extends BaseCrawler {
         const timeout = 10 * 60 * 1000; // 10分钟超时
 
         while (Date.now() - startTime < timeout && this.state.isRunning) {
-            const currentUrl = this.page.url();
-            if (!currentUrl.includes('login') &&
-                (currentUrl.includes('wos') || currentUrl.includes('author'))) {
-                this.logger.info('检测到用户已手动登录');
-                return;
+            if (!this.page || this.page.isClosed()) {
+                throw new Error('浏览器窗口已关闭，登录中断');
+            }
+            try {
+                const currentUrl = this.page.url();
+                if (!currentUrl.includes('login') &&
+                    (currentUrl.includes('wos') || currentUrl.includes('author'))) {
+                    this.logger.info('检测到用户已手动登录');
+                    return;
+                }
+            } catch (error) {
+                // 如果获取 URL 失败（如页面关闭），也抛出错误
+                if (this.page && this.page.isClosed()) {
+                    throw new Error('浏览器窗口已关闭，登录中断');
+                }
+                // 其他错误忽略，继续等待
+                this.logger.warn(`获取页面URL失败: ${error.message}`);
             }
             await this.safeDelay(2000, 2000);
         }
 
         throw new Error('用户手动登录超时（10分钟）');
     }
+
     /**
      * 发送手动登录通知到前端
      */
@@ -310,6 +339,7 @@ class WosAuthorCrawler extends BaseCrawler {
 
         this.logger.info('已发送手动登录提示到前端');
     }
+
     /**
      * 处理登录后的弹窗和验证
      */
@@ -320,6 +350,7 @@ class WosAuthorCrawler extends BaseCrawler {
         await this._waitForCrossBorderAcknowledgement();
         this.logger.info('所有弹窗/验证已处理完成');
     }
+
     /**
      * 关闭 Cookie 弹窗
      */
@@ -417,7 +448,7 @@ class WosAuthorCrawler extends BaseCrawler {
                         checkboxes.forEach(cb => {
                             if (!cb.checked) {
                                 cb.checked = true;
-                                cb.dispatchEvent(new Event('change', { bubbles: true }));
+                                cb.dispatchEvent(new Event('change', {bubbles: true}));
                             }
                         });
                     });
@@ -453,11 +484,12 @@ class WosAuthorCrawler extends BaseCrawler {
             }
         }
     }
+
     /**
      * 执行搜索
      */
     async search(params) {
-        const { keywords: rawInput, options = {} } = params;
+        const {keywords: rawInput, options = {}} = params;
         this.logger.info('搜索开始前，检查并处理弹窗...');
         await this._closeCookiePopup();
         await this._waitForCaptchaClear(60000); // 快速检查，60秒超时
@@ -515,6 +547,7 @@ class WosAuthorCrawler extends BaseCrawler {
 
         return results;
     }
+
     /**
      * 预处理作者输入
      */
@@ -531,9 +564,9 @@ class WosAuthorCrawler extends BaseCrawler {
             return input.map(name => {
                 const parts = name.trim().split(/\s+/);
                 if (parts.length === 1) {
-                    return { familyName: parts[0], givenName: '', orcid: '' };
+                    return {familyName: parts[0], givenName: '', orcid: ''};
                 } else if (parts.length === 2) {
-                    return { familyName: parts[0], givenName: parts[1], orcid: '' };
+                    return {familyName: parts[0], givenName: parts[1], orcid: ''};
                 } else {
                     return {
                         familyName: parts[0],
@@ -575,6 +608,7 @@ class WosAuthorCrawler extends BaseCrawler {
         this.logger.warn('未知输入类型');
         return [];
     }
+
     /**
      * 搜索单个作者
      */
@@ -689,14 +723,14 @@ class WosAuthorCrawler extends BaseCrawler {
                 // 检查是否有服务器错误
                 const hasServerError = await this.checkForServerError();
                 if (hasServerError) {
-                    throw new Error('检测到服务器错误 (Server.unexpectedError)，可能是反爬虫检测');
+                    throw new Error('检测到服务器错误 (Server.unexpectedError)');
                 }
 
                 // 等待结果元素出现
                 const resultAppeared = await Promise.race([
-                    this.page.waitForSelector('h1.search-info-title', { timeout: 30000 }).then(() => true).catch(() => false),
-                    this.page.waitForSelector('text="Your search found no results"', { timeout: 30000 }).then(() => true).catch(() => false),
-                    this.page.waitForSelector('h1[data-test="author-name"]', { timeout: 30000 }).then(() => true).catch(() => false)
+                    this.page.waitForSelector('h1.search-info-title', {timeout: 30000}).then(() => true).catch(() => false),
+                    this.page.waitForSelector('text="Your search found no results"', {timeout: 30000}).then(() => true).catch(() => false),
+                    this.page.waitForSelector('h1[data-test="author-name"]', {timeout: 30000}).then(() => true).catch(() => false)
                 ]);
 
                 if (!resultAppeared) {
@@ -713,12 +747,12 @@ class WosAuthorCrawler extends BaseCrawler {
                 // 如果不是最后一次尝试，等待后重试
                 if (attempt < maxRetries) {
                     const waitTime = 3000 + Math.random() * 2000; // 3-5秒随机延迟
-                    this.logger.info(`等待 ${Math.round(waitTime/1000)} 秒后重试...`);
+                    this.logger.info(`等待 ${Math.round(waitTime / 1000)} 秒后重试...`);
                     await this.safeDelay(waitTime, waitTime);
 
                     // 刷新页面，清除可能的错误状态
                     try {
-                        await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                        await this.page.reload({waitUntil: 'domcontentloaded', timeout: 30000});
                         await this.safeDelay(2000, 3000);
 
                         // 重新导航到搜索页
@@ -754,7 +788,7 @@ class WosAuthorCrawler extends BaseCrawler {
 
                 // 点击页面空白区域（body 的左上角）
                 try {
-                    await this.page.click('body', { position: { x: 10, y: 10 }, force: true });
+                    await this.page.click('body', {position: {x: 10, y: 10}, force: true});
                     await this.safeDelay(200, 300);
                 } catch (e) {
                     this.logger.warn('点击 body 失败，尝试方案3...');
@@ -800,7 +834,6 @@ class WosAuthorCrawler extends BaseCrawler {
             return false;
         }
     }
-
 
 
     /**
@@ -850,14 +883,14 @@ class WosAuthorCrawler extends BaseCrawler {
                 // 检查是否有服务器错误
                 const hasServerError = await this.checkForServerError();
                 if (hasServerError) {
-                    throw new Error('检测到服务器错误 (Server.unexpectedError)，可能是反爬虫检测');
+                    throw new Error('检测到服务器错误 (Server.unexpectedError)');
                 }
 
                 // 等待结果出现
                 const resultAppeared = await Promise.race([
-                    this.page.waitForSelector('h1.search-info-title', { timeout: 30000 }).then(() => true).catch(() => false),
-                    this.page.waitForSelector('text="Your search found no results"', { timeout: 30000 }).then(() => true).catch(() => false),
-                    this.page.waitForSelector('h1[data-test="author-name"]', { timeout: 30000 }).then(() => true).catch(() => false)
+                    this.page.waitForSelector('h1.search-info-title', {timeout: 30000}).then(() => true).catch(() => false),
+                    this.page.waitForSelector('text="Your search found no results"', {timeout: 30000}).then(() => true).catch(() => false),
+                    this.page.waitForSelector('h1[data-test="author-name"]', {timeout: 30000}).then(() => true).catch(() => false)
                 ]);
 
                 if (!resultAppeared) {
@@ -874,12 +907,12 @@ class WosAuthorCrawler extends BaseCrawler {
                 // 如果不是最后一次尝试，等待后重试
                 if (attempt < maxRetries) {
                     const waitTime = 3000 + Math.random() * 2000; // 3-5秒随机延迟
-                    this.logger.info(`等待 ${Math.round(waitTime/1000)} 秒后重试...`);
+                    this.logger.info(`等待 ${Math.round(waitTime / 1000)} 秒后重试...`);
                     await this.safeDelay(waitTime, waitTime);
 
                     // 刷新页面，清除可能的错误状态
                     try {
-                        await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                        await this.page.reload({waitUntil: 'domcontentloaded', timeout: 30000});
                         await this.safeDelay(2000, 3000);
 
                         // 重新导航到搜索页
@@ -951,8 +984,9 @@ class WosAuthorCrawler extends BaseCrawler {
             }
         }
 
-        return { totalResults, authorItems };
+        return {totalResults, authorItems};
     }
+
     /**
      * 提取作者列表
      */
@@ -1006,6 +1040,7 @@ class WosAuthorCrawler extends BaseCrawler {
         this.logger.info(`成功解析 ${authorItems.length} 个作者条目`);
         return authorItems;
     }
+
     /**
      * 提取作者详情（当前页面）
      */
@@ -1063,6 +1098,7 @@ class WosAuthorCrawler extends BaseCrawler {
             return null;
         }
     }
+
     /**
      * 从 URL 提取作者详情
      */
@@ -1071,8 +1107,8 @@ class WosAuthorCrawler extends BaseCrawler {
         const newPage = await this.page.context().newPage();
 
         try {
-            await newPage.goto(authorUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await newPage.waitForSelector('h1[data-test="author-name"]', { timeout: 15000 });
+            await newPage.goto(authorUrl, {waitUntil: 'domcontentloaded', timeout: 30000});
+            await newPage.waitForSelector('h1[data-test="author-name"]', {timeout: 15000});
             await this.safeDelay(1000, 2000);
 
             const detail = await this._extractAuthorDetailOnPage(newPage);
@@ -1084,6 +1120,7 @@ class WosAuthorCrawler extends BaseCrawler {
             await newPage.close();
         }
     }
+
     /**
      * 在指定页面上提取作者详情
      */
@@ -1137,6 +1174,7 @@ class WosAuthorCrawler extends BaseCrawler {
             return null;
         }
     }
+
     /**
      * 返回搜索页
      */
@@ -1150,6 +1188,7 @@ class WosAuthorCrawler extends BaseCrawler {
         await this.safeDelay(3000, 5000);
         this.logger.info('已返回作者搜索页面');
     }
+
     /**
      * 提取数据
      */
@@ -1194,6 +1233,7 @@ class WosAuthorCrawler extends BaseCrawler {
             filePaths
         };
     }
+
     /**
      * 记录失败的作者
      */
@@ -1212,4 +1252,5 @@ class WosAuthorCrawler extends BaseCrawler {
         this.logger.info(`记录失败数据: ${reason}`);
     }
 }
+
 module.exports = WosAuthorCrawler;

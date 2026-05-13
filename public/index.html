@@ -1495,7 +1495,15 @@
         }
         // WoS(SCI)结果
         else if (taskType === 'SCI_INCLUSION') {
-            const list = Array.isArray(resultData) ? resultData : [];
+            let list;
+            if (resultData.successList && Array.isArray(resultData.successList)) {
+                // 有 successList/failedList
+                list = resultData.successList.concat(resultData.failedList || []);
+            } else {
+                // 直接是数组
+                list = Array.isArray(resultData) ? resultData : [];
+            }
+            // const list = Array.isArray(resultData) ? resultData : [];
             theadHtml = '<tr><th>入藏号</th><th>标题</th><th>收录状态</th><th>收录时间</th><th>检索时间</th></tr>';
             list.slice(0, 10).forEach(item => {
                 tbodyHtml += `<tr>

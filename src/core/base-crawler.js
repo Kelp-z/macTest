@@ -14,6 +14,7 @@ class BaseCrawler {
         this.browserManager = new BrowserManager();
         this.errorHandler = new ErrorHandler();
         this.excelExporter = new ExcelExporter();
+
         // 创建独立的干预会话，用于处理人机验证等交互
         this.interventionSession = createInterventionSession(300000);
         this.state = {
@@ -95,13 +96,27 @@ class BaseCrawler {
         this.browserManager.setupBrowserCloseListener(this.browser, (closeInfo) => {
             this.logger.error(`浏览器异常关闭: ${closeInfo.message}`);
 
-            this.stop();
+
             // 设置错误状态
             if (!this.state.error) {
                 this.state.error = this.errorHandler.format(
                     new Error(closeInfo.message),
                     this.crawlerType
                 );
+            }
+            /*
+             立即停止爬虫
+            */
+            this.stop();
+
+            //  如果当前有等待操作，需要中断它们（如等待元素、延迟等）
+            if (this.page) {
+                try {
+                    // 中断页面上的等待操作
+                    this.page.close().catch(() => {});
+                } catch (e) {
+                    // 忽略页面关闭错误
+                }
             }
         });
     }
@@ -147,7 +162,15 @@ class BaseCrawler {
         if (this.interventionSession) {
             this.interventionSession.cancelSource(this.crawlerType, '用户停止爬虫');
         }
-
+        // 强制关闭页面，中断任何正在进行的等待
+        if (this.page && !this.page.isClosed()) {
+            try {
+                await this.page.close();
+                this.logger.info('已主动关闭页面，中断等待操作');
+            } catch (err) {
+                this.logger.warn(`关闭页面时出错: ${err.message}`);
+            }
+        }
         // 清理浏览器资源
         await this.cleanup();
 
@@ -206,10 +229,14 @@ class BaseCrawler {
     async safeDelay(min = 1000, max = 3000) {
         // 检查浏览器是否仍然打开
         if (!this.page || !this.page.context() || this.page.isClosed()) {
-            this.logger.warn('页面已关闭，跳过延迟');
+            // 只打印一次，避免刷屏；可以使用一个标志
+            if (!this._loggedPageClosed) {
+                this.logger.warn('页面已关闭，跳过延迟');
+                this._loggedPageClosed = true;
+            }
             return;
         }
-
+        this._loggedPageClosed = false;
         const delay = Math.floor(Math.random() * (max - min + 1)) + min;
 
         try {

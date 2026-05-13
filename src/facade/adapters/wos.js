@@ -19,7 +19,11 @@ function createWosCrawlerFacade() {
         const saveResult = await crawler.saveResults(extractedData);
 
         await crawler.afterCrawl();
-
+        crawler.state.result = {
+          ...extractedData,
+          ...saveResult
+        };
+        crawler.state.progress = 100;
         return {
           ...saveResult,
           successList: extractedData.successList,
@@ -64,7 +68,7 @@ function createWosCrawlerFacade() {
       source: 'wos',
       inputType: 'keywords',
       supportsIntervention: true,
-      interventionTypes: ['captcha', 'manual']
+      interventionTypes: ['captcha', 'manual','manual-login']
     }
   };
 }

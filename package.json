@@ -61,6 +61,12 @@
       "src/**/*",
       "node_modules/**/*"
     ],
+    "extraFiles": [
+      {
+        "from": "config.json",
+        "to": "."
+      }
+    ],
     "extraResources": [
       {
         "from": "browsers",

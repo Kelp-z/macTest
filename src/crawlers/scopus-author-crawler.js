@@ -468,17 +468,39 @@ class ScopusAuthorCrawler extends BaseCrawler {
 
         // 提取前5个作者的详情
         const maxDetails = 5;
-        for (let idx = 0; idx < Math.min(authorItems.length, maxDetails); idx++) {
-            if (this.shouldStop) break;
-
-            const item = authorItems[idx];
-            if (item.authorUrl) {
-                this.logger.info(`正在提取第 ${idx + 1} 个作者的详情: ${item.authorName}`);
-                const details = await this._extractAuthorDetails(item.authorUrl, item.authorName);
-                item.details = details;
+        const itemsToProcess = Math.min(authorItems.length, maxDetails);
+        this.logger.info(`开始提取前 ${itemsToProcess} 个作者的详情...`);
+        for (let idx = 0; idx < itemsToProcess; idx++) {
+            // 检查停止信号
+            if (this.shouldStop || !this.state.isRunning) {
+                this.logger.warn(`检测到停止信号，中断作者详情提取（已处理 ${idx}/${itemsToProcess} 个）`);
+                break;
             }
 
-            await this.safeDelay(1000, 2000);
+            const item = authorItems[idx];
+            if (!item.authorUrl) {
+                this.logger.warn(`第 ${idx + 1} 个作者缺少 URL，跳过`);
+                continue;
+            }
+            try {
+                this.logger.info(`正在提取第 ${idx + 1}/${itemsToProcess} 个作者的详情: ${item.authorName}`);
+                const details = await this._extractAuthorDetails(item.authorUrl, item.authorName);
+                item.details = details;
+
+                if (details) {
+                    this.logger.info(`第 ${idx + 1} 个作者详情提取成功`);
+                } else {
+                    this.logger.warn(`第 ${idx + 1} 个作者详情提取失败，返回 null`);
+                }
+            } catch (error) {
+                this.logger.error(`第 ${idx + 1} 个作者详情提取异常: ${error.message}`);
+                item.details = null;
+            }
+
+            // 作者之间添加延迟（
+            if (idx < itemsToProcess - 1) {
+                await this.safeDelay(1000, 2000);
+            }
         }
 
         return {
