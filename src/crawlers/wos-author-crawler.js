@@ -111,8 +111,9 @@ class WosAuthorCrawler extends BaseCrawler {
             });
         }
         await this._closeCookiePopup();
-        await this.safeDelay(3000, 5000);
+        await this.safeDelay(5000, 7000);
         this.logger.info('已成功到达作者搜索页面');
+        await this._closeCookiePopup();
         // 处理登录后的弹窗和验证
         await this._handlePostLoginInterventions();
 
@@ -445,21 +446,47 @@ class WosAuthorCrawler extends BaseCrawler {
                     // 勾选复选框
                     await this.page.evaluate(() => {
                         const checkboxes = document.querySelectorAll('mat-checkbox input[type="checkbox"]');
-                        checkboxes.forEach(cb => {
+                        for (let cb of checkboxes) {
                             if (!cb.checked) {
                                 cb.checked = true;
-                                cb.dispatchEvent(new Event('change', {bubbles: true}));
+                                cb.dispatchEvent(new Event('change', { bubbles: true }));
+                                cb.dispatchEvent(new Event('click', { bubbles: true }));
+                            }
+                        }
+                    });
+                    // 多次尝试点击确认按钮，直到弹窗消失或达到最大尝试次数
+                    let retry = 0;
+                    const maxRetry = 3;
+                    let clickSuccess = false;
+                    while (retry < maxRetry) {
+                        // 点击确认按钮
+                        await this.page.evaluate(() => {
+                            const btn = document.querySelector('#cbdt_confirm');
+                            if (btn && !btn.disabled) {
+                                btn.click();
                             }
                         });
-                    });
+                        addLog('info', `已通过 JavaScript 点击 Confirm and continue 按钮 (第 ${retry+1} 次)`);
 
-                    // 点击确认按钮
-                    await this.page.evaluate(() => {
-                        const btn = document.querySelector('#cbdt_confirm');
-                        if (btn && !btn.disabled) btn.click();
-                    });
+                        // 等待一小段时间让页面处理
+                        await this.page.waitForTimeout(2000);
 
-                    await this.safeDelay(2000, 2000);
+                        // 检查弹窗是否消失
+                        const newContent = await this.page.content();
+                        if (!newContent.includes(targetText)) {
+                            addLog('success', '跨境数据传输确认页面已自动处理完成');
+                            clickSuccess = true;
+                            break;
+                        }
+                        retry++;
+                    }
+
+                    if (clickSuccess) {
+                        return;
+                    } else {
+                        addLog('warn', '多次点击确认按钮后弹窗仍未消失，可能仍需手动处理');
+                    }
+
 
                     const newContent = await this.page.content();
                     if (!newContent.includes(targetText)) {
@@ -470,6 +497,7 @@ class WosAuthorCrawler extends BaseCrawler {
                     this.logger.error(`自动处理跨境确认失败: ${err.message}`);
                 }
                 autoAttempts++;
+                await this.safeDelay(5000, 5000);
             } else {
                 this.logger.warn('请手动完成跨境数据传输确认');
                 while (Date.now() - startTime < timeoutMs && this.state.isRunning) {
@@ -493,6 +521,7 @@ class WosAuthorCrawler extends BaseCrawler {
         this.logger.info('搜索开始前，检查并处理弹窗...');
         await this._closeCookiePopup();
         await this._waitForCaptchaClear(60000); // 快速检查，60秒超时
+
         this.logger.info('弹窗处理完成，开始解析作者数据');
 
         const authors = this._preprocessAuthors(rawInput);
@@ -523,7 +552,9 @@ class WosAuthorCrawler extends BaseCrawler {
                 Math.round((i / authors.length) * 60) + 30,
                 `处理第 ${i + 1}/${authors.length} 个作者：${author.familyName} ${author.givenName}`
             );
-
+            // 等待表单加载
+            await this.page.waitForSelector('#snSearchType', {timeout: 15000});
+            this.logger.info('已找到作者搜索表单 #snSearchType');
             try {
                 const result = await this._searchSingleAuthor(author);
                 results.push(result);

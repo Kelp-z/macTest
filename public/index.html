@@ -2619,6 +2619,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             statusTag.textContent = '已停止';
             statusTag.className = 'tag tag-stopped';
             stopRequestedTag.classList.add('hidden'); // 隐藏“停止请求中”标签
+            captchaArea.classList.add('hidden');
+            manualArea.classList.add('hidden'); // 隐藏手动检索区域
             progressTextEl.textContent = '0%';
             progressBarEl.style.width = '0%';
             currentTaskTypeEl.textContent = '-';

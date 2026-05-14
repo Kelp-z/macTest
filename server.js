@@ -122,18 +122,17 @@ app.use('/node_modules', express.static(path.join(__dirname, 'node_modules')));
 // const captchaDir = scopusCrawler.CONFIG?.CAPTCHA_DIR || wosCrawler.CONFIG?.CAPTCHA_DIR || path.join(__dirname, 'captcha_temp');
 // app.use('/captcha', express.static(captchaDir));
 // 验证码图片访问固定配置来源
-const captchaDir = path.join(__dirname, 'captcha_temp');
+const captchaDir = getSafePath('captcha_temp');
 try {
     ensureDir(captchaDir);
     console.log(`验证码目录: ${captchaDir}`);
 
     app.use('/captcha', express.static(captchaDir, {
-        fallthrough: false,  // 如果文件不存在，返回 404 而不是继续匹配其他路由
-        maxAge: '1h'         //  缓存1小时
+        fallthrough: false,
+        maxAge: '1h'
     }));
 } catch (err) {
     console.error('创建验证码目录失败:', err.message);
-    // 使用临时目录作为备选方案
     const os = require('os');
     const tempCaptchaDir = path.join(os.tmpdir(), 'spm_crawler', 'captcha_temp');
     ensureDir(tempCaptchaDir);
