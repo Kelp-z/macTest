@@ -362,16 +362,57 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
 
     if (isStopRequested && isStopRequested()) throw new Error('用户停止');
     // 打开目标链接的中间页
-    let middlePage;
-    [middlePage] = await Promise.all([
-        context.waitForEvent('page', { timeout: 15000 }),
-        (async () => {
-            const targetLink = page.locator(`text=${target.text}`);
-            await targetLink.waitFor({ state: 'visible', timeout: 10000 });
-            await humanClick(page, targetLink);
-            addLog(`${target.text} 打开成功`);
-        })()
-    ]);
+    let middlePage = null;
+    let navigationPromise = null;
+
+    try {
+        // 方式1：等待新页面弹出（target="_blank"）
+        [ middlePage ] = await Promise.all([
+            context.waitForEvent('page', { timeout: 15000 }),
+            (async () => {
+                const targetLink = page.locator(`text=${target.text}`);
+                await targetLink.waitFor({ state: 'visible', timeout: 10000 });
+                await humanClick(page, targetLink);
+                addLog(`${target.text} 点击完成，等待新页面...`);
+            })()
+        ]);
+        addLog('新页面已创建（弹出方式）');
+    } catch (e) {
+        addLog(`等待新页面超时: ${e.message}，尝试检查当前页是否已导航...`);
+
+        // 方式2：检查当前页是否已导航到中间页
+        await page.waitForLoadState('networkidle', { timeout: 10000 });
+        const currentUrl = page.url();
+
+        // 如果当前页 URL 变了，且包含中间页特征，说明是在当前页打开的
+        if (currentUrl.includes('shuoming') || await page.locator('div.shuoming a').count() > 0) {
+            middlePage = page;
+            addLog('检测到当前页已导航到中间页');
+        } else {
+            // 尝试重新点击（有时第一次点击没生效）
+            addLog('尝试重新点击目标链接...');
+            const targetLink = page.locator(`text=${target.text}`).first();
+            await targetLink.click({ force: true });
+
+            // 再等待一下，看是否有新页面或导航
+            await page.waitForTimeout(3000);
+            const newUrl = page.url();
+
+            if (newUrl !== currentUrl) {
+                middlePage = page;
+                addLog('重新点击后页面已导航');
+            } else {
+                throw new Error('无法打开目标链接：既无新页面弹出，当前页也未导航');
+            }
+        }
+    }
+
+    // 确保 middlePage 有效
+    if (!middlePage) {
+        throw new Error('未能获取中间页');
+    }
+
+    // 等待中间页加载
 
     await middlePage.waitForLoadState('domcontentloaded', { timeout: 30000 });
     await middlePage.waitForSelector('div.shuoming a', { timeout: 30000 });
@@ -387,7 +428,8 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
         links.push({
             index: i + 1,
             text: text ? text.trim() : '',
-            href: href || ''
+            href: href || '',
+            source: 'primary' // 标记来源：主列表
         });
     }
     if (links.length === 0) throw new Error('未找到任何镜像链接');
@@ -401,12 +443,16 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
 
     // 自动尝试每个链接
     let targetPage = null;
+    let triedIndices = new Set(); // 记录已尝试的索引，避免重复
     // 测试用，暂时注释此段尝试代码
     for (let i = 0; i < filteredLinks.length; i++) {
         if (isStopRequested && isStopRequested()) throw new Error('用户停止');
         const link = filteredLinks[i];
         addLog(`\n[自动尝试 ${i + 1}/${filteredLinks.length}] 正在打开: ${link.text} (${link.href})`);
-
+        if (triedIndices.has(link.index)) {
+            continue;
+        }
+        triedIndices.add(link.index);
         let newTab;
         try {
             [newTab] = await Promise.all([
@@ -418,7 +464,35 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
             addLog(`点击链接后未检测到新页面: ${e.message}`);
             continue;
         }
+        const hasBackupEntrance = await detectBackupEntrance(newTab, addLog);
+        if (hasBackupEntrance.found) {
+            addLog(`检测到"${hasBackupEntrance.keyword}"提示，发现 ${hasBackupEntrance.backupLinks.length} 个备用入口`);
+            // 关闭当前无效页面
+            await newTab.close().catch(() => {});
 
+            // 将备用入口链接插入到 filteredLinks 最前面（优先尝试）
+            const newLinks = hasBackupEntrance.backupLinks.map((backupLink, idx) => ({
+                index: -1, // 特殊标记，表示非原始列表中的链接
+                text: `备用入口-${backupLink.number}`,
+                href: backupLink.href,
+                source: 'backup',
+                isBackup: true
+            }));
+
+            // 过滤掉已经尝试过的备用入口（通过 href 去重）
+            const existingHrefs = new Set(filteredLinks.map(l => l.href));
+            const uniqueNewLinks = newLinks.filter(nl => !existingHrefs.has(nl.href));
+
+            if (uniqueNewLinks.length > 0) {
+                addLog(`将 ${uniqueNewLinks.length} 个新备用入口插入优先尝试队列`);
+                // 插入到当前位置之后（即下一轮优先尝试）
+                filteredLinks.splice(i + 1, 0, ...uniqueNewLinks);
+                // 更新总长度显示
+                addLog(`当前尝试队列: ${filteredLinks.length} 个站点`);
+            }
+
+            continue; // 继续尝试下一个（即刚插入的备用入口）
+        }
         // 检测维护提示或下载限制
         try {
             // 匹配维护中、请重新进入、下载量已达上限等提示
@@ -459,6 +533,7 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
             if (isValid) {
                 addLog(`✅ 成功加载 ${target.text} 页面: ${url}`);
                 targetPage = newTab;
+                usedLinkIndex = i;
                 break;
             } else {
                 throw new Error('页面缺少目标元素');
@@ -468,7 +543,103 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
             await newTab.close().catch(() => {});
         }
     }
+    /**
+     * 检测页面是否包含"进不去下不了"等提示，并提取备用入口链接
+     * @param {Page} page - 新打开的页面
+     * @param {Function} addLog - 日志函数
+     * @returns {Promise<{found: boolean, keyword: string, backupLinks: Array<{number: string, href: string}>}>}
+     */
+    async function detectBackupEntrance(page, addLog) {
+        const keywords = [
+            '进不去下不了',
+            '请换一个入口',
+            '无法访问',
+            '访问受限',
+            '请更换入口'
+        ];
+        // 默认排除的域名黑名单
+        const defaultExcludedDomains = [
+            'jcr.clarivate.com',
+            'jcr.clarivate.cn'
+        ];
+        try {
+            // 获取页面文本内容
+            const pageText = await page.evaluate(() => document.body.innerText);
 
+            // 检测关键词
+            let matchedKeyword = '';
+            for (const keyword of keywords) {
+                if (pageText.includes(keyword)) {
+                    matchedKeyword = keyword;
+                    break;
+                }
+            }
+
+            if (!matchedKeyword) {
+                return { found: false, keyword: '', backupLinks: [] };
+            }
+
+            // 提取所有"入口xxx"链接
+            // 匹配模式：入口 + 数字，如"入口101"、"入口118"
+            const backupLinks = await page.evaluate(() => {
+                const links = [];
+                const allLinks = document.querySelectorAll('a');
+
+                for (const a of allLinks) {
+                    const text = a.textContent.trim();
+                    // 匹配"入口" + 数字 的模式
+                    const match = text.match(/入口(\d+)/);
+                    if (match) {
+                        links.push({
+                            number: match[1],
+                            text: text,
+                            href: a.href
+                        });
+                    }
+                }
+
+                return links;
+            });
+
+            // 去重并按黑名单过滤
+            const seen = new Set();
+            const uniqueLinks = backupLinks.filter(link => {
+                if (seen.has(link.href)) return false;
+                seen.add(link.href);
+
+                // 排除已知非目标域名
+                try {
+                    const url = new URL(link.href);
+                    const hostname = url.hostname.toLowerCase();
+
+                    const isExcluded = blacklist.some(domain => {
+                        const d = domain.toLowerCase();
+                        return hostname === d || hostname.endsWith('.' + d);
+                    });
+
+                    if (isExcluded) {
+                        addLog(`排除非目标域名链接: ${link.text} -> ${hostname}`);
+                        return false;
+                    }
+
+                    return true;
+                } catch (e) {
+                    // URL 解析失败（可能是相对路径），保留
+                    return true;
+                }
+            });
+
+            return {
+                found: true,
+                keyword: matchedKeyword,
+                backupLinks: uniqueLinks
+            };
+
+        } catch (error) {
+            addLog(`检测备用入口时出错: ${error.message}`);
+            return { found: false, keyword: '', backupLinks: [] };
+        }
+    }
     // 手动模式
     if (!targetPage) {
         addLog(`\n所有 ${target.text} 镜像站点自动尝试均失败。`);
@@ -537,7 +708,13 @@ async function academicCatNavigateToTarget(page, context, config, target, onManu
         }
     }
 
-    return targetPage;
+    return {
+        page: targetPage,
+        middlePage: middlePage,
+        availableLinks: filteredLinks,
+        currentLinkIndex: usedLinkIndex,
+        allFilteredLinks: filteredLinks
+    };
 }
 
 module.exports = {

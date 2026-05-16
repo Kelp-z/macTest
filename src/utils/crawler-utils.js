@@ -159,10 +159,55 @@ async function handleAnyCaptcha(page, context) {
     await      handleHumanCaptcha(page, context);
 }
 
+// utils/crawler-utils.js
+
+/**
+ * 检测 Google 反脚本检测页面
+ * @param {Page} page
+ * @param {Function} logger
+ * @returns {Promise<{isBlocked: boolean, message: string}>}
+ */
+async function checkGoogleAntiBot(page, logger) {
+    try {
+        const url = page.url();
+
+        // URL 特征
+        if (url.includes('/sorry/') || url.includes('google.com/sorry')) {
+            logger && logger.error('检测到 Google 反脚本检测 (URL特征)');
+            return { isBlocked: true, message: '遭遇谷歌反脚本检测，检索中断' };
+        }
+
+        // 页面内容特征
+        const bodyText = await page.evaluate(() => document.body.innerText).catch(() => '');
+
+        const indicators = [
+            "We're sorry",
+            "automated queries",
+            "can't process your request right now",
+            "your computer or network may be sending automated queries"
+        ];
+
+        const matched = indicators.find(ind =>
+            bodyText.toLowerCase().includes(ind.toLowerCase())
+        );
+
+        if (matched) {
+            logger && logger.error(`检测到 Google 反脚本检测 (文本特征: "${matched}")`);
+            return { isBlocked: true, message: '遭遇谷歌反脚本检测，检索中断' };
+        }
+
+        return { isBlocked: false, message: '' };
+    } catch (error) {
+        return { isBlocked: false, message: '' };
+    }
+}
+
+
 // 直接导出所有工具方法
 module.exports = {
     isAnyCaptchaPresent,
     handleAnyCaptcha,
     handleHumanCaptcha,
-    handleTraditionalCaptcha
+    handleTraditionalCaptcha,
+    checkGoogleAntiBot
 };

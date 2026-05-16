@@ -20,7 +20,7 @@ function createGoogleCrawlerFacade() {
                 await crawler.crawl({ keywords, options });
             } catch (error) {
                 //  统一的错误处理
-                handleCrawlerError('google', error);
+                // handleCrawlerError('google', error);
                 throw error; // 重新抛出，让调用方知道失败了
             }
         },

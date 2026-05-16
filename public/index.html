@@ -726,7 +726,7 @@
         <span class="slider"></span>
     </label>
     <span class="switch-label">自动接取任务</span>
-    <div class="form-group" style="margin-top: 10px;">
+    <div class="form-group" style="margin-top: 10px;display: none">
         <!--        <label>-->
         <!--            <input type="checkbox" id="generateExcelCheckbox" checked> 📊 生成Excel文件-->
         <!--        </label>-->
@@ -735,7 +735,7 @@
             <input type="checkbox" id="generateExcelCheckbox">
             <span class="slider"></span>
         </label>
-        <span class="switch-label">📊 生成Excel文件</span>
+        <span class="switch-label">📊 生成Excel文件</span >
         <div id="outputDirContainer" class="output-dir-container">
             <label style="margin-left: 20px;">输出目录:
                 <input type="text" id="outputDirInput" placeholder="默认保存到桌面" style="width: 300px;">
@@ -1197,12 +1197,16 @@
                             clearAppState();
                             currentTask = null;
                             updateButtons(false);
+                            statusTag.textContent = '已停止';
                             return false;
                         }
                     }
                 } else {
                     // 无任务，确保界面为停止状态
                     updateButtons(false);
+                    // 无任务时显示未运行
+                    statusTag.textContent = '未运行';
+                    statusTag.className = 'tag tag-stopped';
                 }
                 return true;
             } catch (e) {
@@ -1394,8 +1398,8 @@
             statusTag.textContent = '运行中';
             statusTag.className = 'tag tag-running';
         } else {
-            statusTag.textContent = '已停止';
-            statusTag.className = 'tag tag-stopped';
+            // statusTag.textContent = '已停止';
+            // statusTag.className = 'tag tag-stopped';
         }
     }
 
@@ -2305,7 +2309,13 @@
                     if (!res.data.isRunning) {
 
                         addLog('info', `任务 ${taskId} 已完成...`);
-
+                        if (res.data.error) {
+                            statusTag.textContent = '已停止';
+                            statusTag.className = 'tag tag-stopped';
+                        } else {
+                            statusTag.textContent = '已完成';
+                            statusTag.className = 'tag tag-stopped';
+                        }
                         // 构造完成/失败状态
                         const completedTask = {
                             id: taskId,
@@ -2823,96 +2833,247 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
     //         addLog('error', 'STOMP连接失败：' + error);
     //     });
     // }
+
+    let stompReconnectTimer = null;
+    let stompHeartbeatTimer = null;
     function connectStomp() {
+
+        if (stompReconnectTimer) {
+            clearTimeout(stompReconnectTimer);
+            stompReconnectTimer = null;
+        }
+
         // 循环等待 SockJS 和 Stomp 加载完成，最多等 5 秒
         let attempts = 0;
         console.log(SockJS)
         const tryConnect = () => {
-            // 检查库是否已加载
-            if (typeof SockJS !== 'undefined' && typeof Stomp !== 'undefined') {
-                addLog('info', 'STOMP 库已加载，开始连接...');
-
-                // const socket = new SockJS(`http://localhost:8080/ws`);
-                // const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
-                const springBaseUrl = portConfig.springBaseUrl || 'http://localhost:8080';
-                // 使用 backendToken
-                const tokenParam = backendToken ? `&token=${encodeURIComponent(backendToken)}` : '';
-                let url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
-                if(backendToken){
-                     url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}${tokenParam}`;
-                }else {
-                    throw new Error('获取token失败')
-                }
-
-                const socket = new SockJS(url);
-                stompClient = Stomp.over(socket);
-
-
-                const token = localStorage.getItem('token'); // 从 localStorage 获取 token
-
-                stompClient.connect({}, function (frame) {
-                    addLog('success', 'STOMP已连接：' + frame);
-                    stompClient.subscribe('/topic/messages', function (response) {
-                        addLog('info', '收到消息：' + response.body);
-                    });
-                    stompClient.subscribe('/user/queue/heartbeat', function (message) {
-                        if (message.body && message.body.startsWith('Heart:')) {
-                            if (stompClient && stompClient.connected) {
-                                stompClient.send('/app/heartbeat/response', {}, JSON.stringify({}));
-                            }
-                        }
-                    });
-                    stompClient.subscribe('/user/queue/task', function (message) {
-                        try {
-                            const taskData = JSON.parse(message.body);
-                            addLog('info', `收到新任务 [ID: ${taskData.id}]，类型: ${taskData.type}`);
-                            pendingTasks = Array.from(new Map([
-                                ...pendingTasks.map(item => [item.id, item]),
-                                [taskData.id, taskData]
-                            ]).values());
-                            // 解析任务并添加到pendingTasks
-                            renderPendingTasks();
-                            // 自动接取
-                            checkAndTakeNextTask();
-                        } catch (e) {
-                            addLog('error', `解析任务数据失败：${e.message}`);
-                        }
-                    });
-                    // 连接成功后，发送 Online 消息并携带额外数据
-                    stompClient.send('/app/Online', {}, JSON.stringify({
-                        terminalId: terminalMachineCode,
-                        token: token,
-                        clientType: 'electron',
-                        timestamp: Date.now()
-                    }));
-
-                    // 订阅终止任务队列
-                    stompClient.subscribe('/user/queue/terminate', function (message) {
-                        try {
-                            const task = JSON.parse(message.body);
-                            addLog('warn', `收到终止任务指令: ID=${task.id}, 类型=${task.type}`);
-                            handleTerminateTask(task);
-                        } catch (e) {
-                            addLog('error', `解析终止任务消息失败: ${e.message}`);
-                        }
-                    });
-                }, function (error) {
-                    addLog('error', 'STOMP连接失败!确认您的网络连接是否异常!');
-                    // addLog('error', 'STOMP连接失败：' + error);
-                    setTimeout(connectStomp, 2000);
-                });
-            } else {
+            if (typeof SockJS === 'undefined' || typeof Stomp === 'undefined') {
                 attempts++;
-                if (attempts > 50) { // 5秒超时
+                if (attempts > 50) {
                     addLog('error', 'STOMP库加载超时，请检查网络');
+                    // 继续重试，但延长间隔
+                    stompReconnectTimer = setTimeout(connectStomp, 10000);
                     return;
                 }
-                setTimeout(tryConnect, 100); // 每100ms重试一次
+                setTimeout(tryConnect, 100);
+                return;
             }
+
+            addLog('info', 'STOMP 库已加载，开始连接...');
+            const springBaseUrl = portConfig.springBaseUrl || 'http://localhost:8080';
+            // 使用 backendToken
+            const tokenParam = backendToken ? `&token=${encodeURIComponent(backendToken)}` : '';
+            let url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
+            if(backendToken){
+                url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}${tokenParam}`;
+            }else {
+                throw new Error('获取token失败')
+            }
+
+            const socket = new SockJS(url);
+            stompClient = Stomp.over(socket);
+
+
+            const token = localStorage.getItem('token'); // 从 localStorage 获取 token
+
+            stompClient.connect({}, function (frame) {
+                addLog('success', 'STOMP已连接：' + frame);
+                // 清除重连定时器
+                if (stompReconnectTimer) {
+                    clearTimeout(stompReconnectTimer);
+                    stompReconnectTimer = null;
+                }
+                stompClient.subscribe('/topic/messages', function (response) {
+                    addLog('info', '收到消息：' + response.body);
+                });
+                stompClient.subscribe('/user/queue/heartbeat', function (message) {
+                    if (message.body && message.body.startsWith('Heart:')) {
+                        if (stompClient && stompClient.connected) {
+                            stompClient.send('/app/heartbeat/response', {}, JSON.stringify({}));
+                        }
+                    }
+                });
+                stompClient.subscribe('/user/queue/task', function (message) {
+                    try {
+                        const taskData = JSON.parse(message.body);
+                        addLog('info', `收到新任务 [ID: ${taskData.id}]，类型: ${taskData.type}`);
+                        pendingTasks = Array.from(new Map([
+                            ...pendingTasks.map(item => [item.id, item]),
+                            [taskData.id, taskData]
+                        ]).values());
+                        // 解析任务并添加到pendingTasks
+                        renderPendingTasks();
+                        // 自动接取
+                        checkAndTakeNextTask();
+                    } catch (e) {
+                        addLog('error', `解析任务数据失败：${e.message}`);
+                    }
+                });
+                // SockJS + STOMP 没有内置心跳，手动检测
+                startStompHeartbeat();
+                // 连接成功后，发送 Online 消息并携带额外数据
+                stompClient.send('/app/Online', {}, JSON.stringify({
+                    terminalId: terminalMachineCode,
+                    token: token,
+                    clientType: 'electron',
+                    timestamp: Date.now()
+                }));
+
+                // 订阅终止任务队列
+                stompClient.subscribe('/user/queue/terminate', function (message) {
+                    try {
+                        const task = JSON.parse(message.body);
+                        addLog('warn', `收到终止任务指令: ID=${task.id}, 类型=${task.type}`);
+                        handleTerminateTask(task);
+                    } catch (e) {
+                        addLog('error', `解析终止任务消息失败: ${e.message}`);
+                    }
+                });
+            }, function (error) {
+                // 连接失败或断开回调
+                addLog('error', 'STOMP连接断开: ' + (error || '未知原因'));
+                cleanupStompConnection();
+                // 指数退避重连
+                const delay = Math.min(2000 * Math.pow(2, reconnectAttempt), 30000);
+                reconnectAttempt++;
+                addLog('info', `${delay/1000}秒后尝试重连STOMP...`);
+                stompReconnectTimer = setTimeout(connectStomp, delay);
+            });
+            // 检查库是否已加载
+            // if (typeof SockJS !== 'undefined' && typeof Stomp !== 'undefined') {
+            //     addLog('info', 'STOMP 库已加载，开始连接...');
+            //
+            //     // const socket = new SockJS(`http://localhost:8080/ws`);
+            //     // const socket = new SockJS(`http://localhost:8080/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`);
+            //     const springBaseUrl = portConfig.springBaseUrl || 'http://localhost:8080';
+            //     // 使用 backendToken
+            //     const tokenParam = backendToken ? `&token=${encodeURIComponent(backendToken)}` : '';
+            //     let url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}`;
+            //     if(backendToken){
+            //          url = `${springBaseUrl}/ws?terminalId=${encodeURIComponent(terminalMachineCode)}${tokenParam}`;
+            //     }else {
+            //         throw new Error('获取token失败')
+            //     }
+            //
+            //     const socket = new SockJS(url);
+            //     stompClient = Stomp.over(socket);
+            //
+            //
+            //     const token = localStorage.getItem('token'); // 从 localStorage 获取 token
+            //
+            //     stompClient.connect({}, function (frame) {
+            //         addLog('success', 'STOMP已连接：' + frame);
+            //         // 清除重连定时器
+            //         if (stompReconnectTimer) {
+            //             clearTimeout(stompReconnectTimer);
+            //             stompReconnectTimer = null;
+            //         }
+            //         stompClient.subscribe('/topic/messages', function (response) {
+            //             addLog('info', '收到消息：' + response.body);
+            //         });
+            //         stompClient.subscribe('/user/queue/heartbeat', function (message) {
+            //             if (message.body && message.body.startsWith('Heart:')) {
+            //                 if (stompClient && stompClient.connected) {
+            //                     stompClient.send('/app/heartbeat/response', {}, JSON.stringify({}));
+            //                 }
+            //             }
+            //         });
+            //         stompClient.subscribe('/user/queue/task', function (message) {
+            //             try {
+            //                 const taskData = JSON.parse(message.body);
+            //                 addLog('info', `收到新任务 [ID: ${taskData.id}]，类型: ${taskData.type}`);
+            //                 pendingTasks = Array.from(new Map([
+            //                     ...pendingTasks.map(item => [item.id, item]),
+            //                     [taskData.id, taskData]
+            //                 ]).values());
+            //                 // 解析任务并添加到pendingTasks
+            //                 renderPendingTasks();
+            //                 // 自动接取
+            //                 checkAndTakeNextTask();
+            //             } catch (e) {
+            //                 addLog('error', `解析任务数据失败：${e.message}`);
+            //             }
+            //         });
+            //         // SockJS + STOMP 没有内置心跳，手动检测
+            //         startStompHeartbeat();
+            //         // 连接成功后，发送 Online 消息并携带额外数据
+            //         stompClient.send('/app/Online', {}, JSON.stringify({
+            //             terminalId: terminalMachineCode,
+            //             token: token,
+            //             clientType: 'electron',
+            //             timestamp: Date.now()
+            //         }));
+            //
+            //         // 订阅终止任务队列
+            //         stompClient.subscribe('/user/queue/terminate', function (message) {
+            //             try {
+            //                 const task = JSON.parse(message.body);
+            //                 addLog('warn', `收到终止任务指令: ID=${task.id}, 类型=${task.type}`);
+            //                 handleTerminateTask(task);
+            //             } catch (e) {
+            //                 addLog('error', `解析终止任务消息失败: ${e.message}`);
+            //             }
+            //         });
+            //     }, function (error) {
+            //         addLog('error', 'STOMP连接失败!确认您的网络连接是否异常!');
+            //         // addLog('error', 'STOMP连接失败：' + error);
+            //         setTimeout(connectStomp, 2000);
+            //     });
+            // } else {
+            //     attempts++;
+            //     if (attempts > 50) { // 5秒超时
+            //         addLog('error', 'STOMP库加载超时，请检查网络');
+            //         return;
+            //     }
+            //     setTimeout(tryConnect, 100); // 每100ms重试一次
+            // }
         };
+        let reconnectAttempt = 0;
         tryConnect();
     }
+    function startStompHeartbeat() {
+        // 清除旧的心跳定时器
+        if (stompHeartbeatTimer) {
+            clearInterval(stompHeartbeatTimer);
+        }
 
+        // 每30秒发送一次心跳
+        stompHeartbeatTimer = setInterval(() => {
+            if (stompClient && stompClient.connected) {
+                try {
+                    stompClient.send('/app/heartbeat', {}, JSON.stringify({
+                        timestamp: Date.now(),
+                        terminalId: terminalMachineCode
+                    }));
+                } catch (e) {
+                    addLog('warn', 'STOMP心跳发送失败，可能已断开');
+                    cleanupStompConnection();
+                    connectStomp(); // 触发重连
+                }
+            } else {
+                // 连接已断开，清理并触发重连
+                clearInterval(stompHeartbeatTimer);
+                stompHeartbeatTimer = null;
+                connectStomp();
+            }
+        }, 30000);
+    }
+
+    // 清理 STOMP 连接状态
+    function cleanupStompConnection() {
+        if (stompHeartbeatTimer) {
+            clearInterval(stompHeartbeatTimer);
+            stompHeartbeatTimer = null;
+        }
+        if (stompClient) {
+            try {
+                stompClient.disconnect();
+            } catch (e) {
+                // 忽略断开错误
+            }
+            stompClient = null;
+        }
+    }
     // 处理终止任务（任务长时间未处理完成被引擎判断为超时）
     async function handleTerminateTask(task) {
         const taskId = task.id;

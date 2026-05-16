@@ -19,6 +19,7 @@
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "ejs": "^4.0.1",
+    "electron-updater": "^6.8.3",
     "excel4node": "^1.8.2",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
@@ -45,6 +46,10 @@
     "npmRebuild": false,
     "appId": "com.spm.spmcrawler",
     "productName": "SPM Crawler",
+    "publish": {
+      "provider": "generic",
+      "url": "http://124.70.184.0:8100/"
+    },
     "directories": {
       "output": "dist"
     },

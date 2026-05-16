@@ -4,9 +4,59 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-
+const net = require('net');
 chromium.use(StealthPlugin());
 
+/**
+ * 基础反检测参数 - 禁用自动化标记和后台限制
+ */
+const CHROME_ARGS = [
+    '--disable-blink-features=AutomationControlled',      // 禁用自动化控制标记
+    '--disable-infobars',                                // 禁用"Chrome正受到自动测试软件控制"
+    '--disable-background-timer-throttling',             // 后台标签不禁用定时器
+    '--disable-backgrounding-occluded-windows',            // 最小化窗口不暂停渲染
+    '--disable-renderer-backgrounding',                  // 渲染进程不被降级
+    '--disable-features=IsolateOrigins,site-per-process', // 禁用站点隔离
+    '--disable-site-isolation-trials',
+];
+/**
+ * Docker/容器环境专用参数
+ */
+const CHROME_DOCKER_ARGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+];
+
+/**
+ * Headless模式伪装参数（配合 --headless=new 使用）
+ */
+const CHROME_HEADLESS_ARGS = [
+    '--hide-scrollbars',
+    '--mute-audio',
+    '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4',
+];
+
+/**
+ * 禁用安全限制参数（谨慎使用，仅在受控环境启用）
+ */
+const CHROME_DISABLE_SECURITY_ARGS = [
+    '--disable-web-security',
+    '--disable-features=BlockInsecurePrivateNetworkRequests',
+];
+
+/**
+ * 确定性渲染参数 - 确保渲染一致性，减少环境差异指纹
+ */
+const CHROME_DETERMINISTIC_RENDERING_ARGS = [
+    '--deterministic-mode',
+    '--disable-skia-runtime-opts',
+    '--run-all-compositor-stages-before-draw',
+    '--disable-new-content-rendering-timeout',
+    '--disable-threaded-animation',
+    '--disable-threaded-scrolling',
+    '--disable-checker-imaging',
+];
 class BrowserManager {
     constructor() {
         this.browsersPath = this._findBrowsersPath();
@@ -278,10 +328,182 @@ class BrowserManager {
             throw new Error(`无法获取浏览器: ${error.message}`);
         }
     }
+    /**
+     * 获取屏幕分辨率
+     * @returns {{width: number, height: number}}
+     */
+    _getScreenResolution() {
+        // Electron 环境：使用 screen API
+        if (process.versions.electron) {
+            try {
+                const { screen } = require('electron');
+                const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+                return { width, height };
+            } catch (e) {
+                console.warn('[BrowserManager] 获取 Electron 屏幕分辨率失败:', e.message);
+            }
+        }
+
+        // 尝试通过系统命令获取
+        try {
+            const { execSync } = require('child_process');
+
+            if (process.platform === 'win32') {
+                const output = execSync(
+                    'wmic path Win32_VideoController get CurrentHorizontalResolution,CurrentVerticalResolution /value',
+                    { encoding: 'utf8', timeout: 5000 }
+                );
+                const widthMatch = output.match(/CurrentHorizontalResolution=(\d+)/);
+                const heightMatch = output.match(/CurrentVerticalResolution=(\d+)/);
+                if (widthMatch && heightMatch) {
+                    return {
+                        width: parseInt(widthMatch[1], 10),
+                        height: parseInt(heightMatch[1], 10)
+                    };
+                }
+            } else if (process.platform === 'darwin') {
+                const output = execSync(
+                    'system_profiler SPDisplaysDataType | grep Resolution',
+                    { encoding: 'utf8', timeout: 5000 }
+                );
+                const match = output.match(/(\d+)\s*x\s*(\d+)/);
+                if (match) {
+                    return {
+                        width: parseInt(match[1], 10),
+                        height: parseInt(match[2], 10)
+                    };
+                }
+            } else if (process.platform === 'linux') {
+                try {
+                    const output = execSync('xrandr | grep "\\*" | head -1', {
+                        encoding: 'utf8',
+                        timeout: 5000
+                    });
+                    const match = output.match(/(\d+)x(\d+)/);
+                    if (match) {
+                        return {
+                            width: parseInt(match[1], 10),
+                            height: parseInt(match[2], 10)
+                        };
+                    }
+                } catch (e) {
+                    // xrandr 可能不可用（无显示服务器）
+                }
+            }
+        } catch (e) {
+            console.warn('[BrowserManager] 通过系统命令获取屏幕分辨率失败:', e.message);
+        }
+
+        // 默认返回标准桌面分辨率
+        return { width: 1920, height: 1080 };
+    }
+
+    /**
+     * 获取窗口偏移量（模拟真实窗口边框和任务栏）
+     * 确保 window.outerWidth !== window.innerWidth，绕过 headless 检测
+     * @returns {{offsetX: number, offsetY: number}}
+     */
+    _getWindowAdjustments() {
+        // 模拟真实窗口的边框和标题栏偏移
+        if (process.platform === 'win32') {
+            return { offsetX: 8, offsetY: 31 };   // 左边框8px，标题栏约23px + 任务栏偏移
+        } else if (process.platform === 'darwin') {
+            return { offsetX: 0, offsetY: 25 };   // macOS 标题栏约25px
+        } else {
+            return { offsetX: 1, offsetY: 28 };   // Linux 假设值
+        }
+    }
+
+    /**
+     * 检查端口是否被占用（第三层反检测：端口冲突智能处理）
+     * @param {number} port
+     * @returns {Promise<boolean>}
+     */
+    _isPortInUse(port) {
+        return new Promise((resolve) => {
+            const tester = net.createServer()
+                .once('error', (err) => {
+                    resolve(err.code === 'EADDRINUSE');
+                })
+                .once('listening', () => {
+                    tester.close(() => resolve(false));
+                })
+                .listen(port, '127.0.0.1');
+        });
+    }
+
+    /**
+     * 构建完整的 Chrome 反检测启动参数
+     * 整合三层反检测策略：
+     *   第一层：启动参数注入（CHROME_ARGS 系列常量）
+     *   第二层：窗口尺寸与位置仿真
+     *   第三层：远程调试端口冲突检测
+     * @param {Object} options
+     * @returns {Promise<string[]>}
+     */
+    async _buildAntiDetectArgs(options = {}) {
+        const {
+            headless = false,
+            remoteDebuggingPort = 9222,
+            extraBrowserArgs = [],
+            customArgs = []
+        } = options;
+
+        const chromeArgs = new Set();
+
+        // 第一层：基础反检测参数注入
+        CHROME_ARGS.forEach(arg => chromeArgs.add(arg));
+        CHROME_DOCKER_ARGS.forEach(arg => chromeArgs.add(arg));
+        CHROME_DISABLE_SECURITY_ARGS.forEach(arg => chromeArgs.add(arg));
+        CHROME_DETERMINISTIC_RENDERING_ARGS.forEach(arg => chromeArgs.add(arg));
+
+        // Headless 模式伪装参数
+        if (headless) {
+            CHROME_HEADLESS_ARGS.forEach(arg => chromeArgs.add(arg));
+        }
+
+        // 第二层：窗口尺寸与位置仿真
+        let screenSize, offsetX, offsetY;
+        if (headless) {
+            // Headless 模式：模拟标准桌面分辨率
+            screenSize = { width: 1920, height: 1080 };
+            offsetX = 0;
+            offsetY = 0;
+        } else {
+            // 有头模式：获取真实屏幕分辨率并计算偏移
+            screenSize = this._getScreenResolution();
+            const adjustments = this._getWindowAdjustments();
+            offsetX = adjustments.offsetX;
+            offsetY = adjustments.offsetY;
+        }
+
+        chromeArgs.add(`--window-position=${offsetX},${offsetY}`);
+        chromeArgs.add(`--window-size=${screenSize.width},${screenSize.height}`);
+
+        // 第三层：远程调试端口冲突智能处理
+        const portInUse = await this._isPortInUse(remoteDebuggingPort);
+        if (!portInUse) {
+            chromeArgs.add(`--remote-debugging-port=${remoteDebuggingPort}`);
+        } else {
+            console.warn(`[BrowserManager] 远程调试端口 ${remoteDebuggingPort} 已被占用，跳过注入以避免启动失败`);
+        }
+
+        // 合并用户自定义参数（去重）
+        extraBrowserArgs.forEach(arg => chromeArgs.add(arg));
+        customArgs.forEach(arg => chromeArgs.add(arg));
+
+        return Array.from(chromeArgs);
+    }
 
     /**
      * 启动浏览器
      * @param {Object} options - 浏览器启动选项
+     * @param {boolean} options.headless - 是否无头模式（默认 false）
+     * @param {string} options.executablePath - 浏览器可执行文件路径
+     * @param {string[]} options.args - 额外的 Chrome 启动参数
+     * @param {string} options.userDataDir - 用户数据目录
+     * @param {number} options.remoteDebuggingPort - 远程调试端口（默认 9222）
+     * @param {string[]} options.extraBrowserArgs - 额外的反检测参数
      * @returns {Promise<Object>} browser 实例
      */
     async launch(options = {}) {
@@ -289,25 +511,33 @@ class BrowserManager {
             headless = false,
             executablePath = null,
             args = [],
-            userDataDir = null
+            userDataDir = null,
+            remoteDebuggingPort = 9222,
+            extraBrowserArgs = []
         } = options;
 
         let browserPath = executablePath;
         if (!browserPath) {
             browserPath = await this.ensureBrowser();
         }
-
-        const launchArgs = [
-            '--no-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            ...args
-        ];
-
+        // 构建完整的反检测启动参数
+        const antiDetectArgs = await this._buildAntiDetectArgs({
+            headless,
+            remoteDebuggingPort,
+            extraBrowserArgs,
+            customArgs: args
+        });
+        // const launchArgs = [
+        //     '--no-sandbox',
+        //     '--disable-blink-features=AutomationControlled',
+        //     '--disable-dev-shm-usage',
+        //     ...args
+        // ];
+        console.log('BrowserManager 启动参数:', antiDetectArgs);
         const launchOptions = {
             executablePath: browserPath,
             headless,
-            args: launchArgs
+            args: antiDetectArgs
         };
 
         if (userDataDir) {
@@ -323,18 +553,19 @@ class BrowserManager {
     }
 
     /**
-     * 创建新页面
+     * 创建新页面（修复 locale/timezoneId 透传）
      * @param {Object} browser - browser 实例
      * @param {Object} contextOptions - 上下文选项
-     * @returns {Promise<Object>} page 实例
+     * @returns {Promise<Object>} { page, context }
      */
     async createPage(browser, contextOptions = {}) {
         const {
             userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             acceptDownloads = true,
             downloadsPath = null,
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
+            locale = 'zh-CN',
+            timezoneId,
+            timezone_id,
             viewport = { width: 1280, height: 800 }
         } = contextOptions;
 
@@ -342,6 +573,8 @@ class BrowserManager {
             userAgent,
             acceptDownloads,
             viewport,
+            locale,
+            timezoneId: timezoneId || timezone_id || 'Asia/Shanghai',
             ...(downloadsPath && { downloadsPath })
         });
 
@@ -379,7 +612,7 @@ class BrowserManager {
                     });
                 }
             } else {
-                console.log('[BrowserManager] 浏览器正常关闭');
+                console.log('BrowserManager 浏览器正常关闭');
             }
         };
 
@@ -496,7 +729,7 @@ class BrowserManager {
             if (process.platform === 'win32') {
                 execSync('taskkill /F /IM chrome.exe /T 2>nul', { stdio: 'ignore' });
                 execSync('taskkill /F /IM chromium.exe /T 2>nul', { stdio: 'ignore' });
-                console.log('✓ 已终止残留进程');
+                console.log('BrowserManager 已终止残留进程');
             }
         } catch (e) {
             // 忽略错误
@@ -510,7 +743,7 @@ class BrowserManager {
                     const fullPath = path.join(tmpDir, file);
                     try {
                         fs.rmSync(fullPath, { recursive: true, force: true });
-                        console.log(`✓ 删除: ${file}`);
+                        console.log(` 删除: ${file}`);
                     } catch (e) {
                         // 忽略错误
                     }

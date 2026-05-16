@@ -16,6 +16,7 @@ class WosAuthorCrawler extends BaseCrawler {
             OUTPUT_BASE_DIR_NAME: crawlerConfig.OUTPUT_BASE_DIR_NAME ?? 'output/wos_authors',
             LOGIN_URL: 'https://access.clarivate.com/login?app=wos',
             TARGET_URL: 'https://webofscience.clarivate.cn/wos/author/author-search'
+
         };
 
         // WoS 登录凭证（从 config.json 读取）

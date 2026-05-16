@@ -7,6 +7,53 @@ const os = require('os');
 const { machineIdSync  } = require('node-machine-id');
 const crypto = require('crypto');
 const configManager = require('./src/infrastructure/config-manager');
+const {autoUpdater} = require("electron-updater");
+
+// 从配置读取更新源
+let updateConfig = null;
+let UPDATE_URL =  'http://124.70.184.0:8100/';
+
+// 设置更新源
+autoUpdater.setFeedURL({
+    provider: 'generic',
+    url: UPDATE_URL
+});
+
+console.log('更新源已配置:', UPDATE_URL);
+
+// 发现新版本
+autoUpdater.on('update-available', (info) => {
+    dialog.showMessageBox({
+        type: 'info',
+        title: '发现新版本',
+        message: `发现新版本 ${info.version}，是否下载？`,
+        buttons: ['下载', '稍后']
+    }).then(({ response }) => {
+        if (response === 0) autoUpdater.downloadUpdate();
+    });
+});
+
+// 下载进度
+autoUpdater.on('download-progress', (progressObj) => {
+    console.log(`下载进度: ${progressObj.percent}%`);
+});
+
+// 下载完成
+autoUpdater.on('update-downloaded', () => {
+    dialog.showMessageBox({
+        type: 'info',
+        title: '更新就绪',
+        message: '新版本已下载，是否立即安装？',
+        buttons: ['安装', '稍后']
+    }).then(({ response }) => {
+        if (response === 0) autoUpdater.quitAndInstall();
+    });
+});
+
+// 错误处理
+autoUpdater.on('error', (err) => {
+    console.error('更新检查失败:', err.message);
+});
 
 let mainWindow;
 
@@ -17,12 +64,55 @@ const ELECTRON_TOKEN = crypto.randomBytes(32).toString('hex');
 ipcMain.handle('get-electron-token', () => {
     return ELECTRON_TOKEN;
 });
-
-app.whenReady().then(async () => {
+function initUpdater() {
     try {
+        updateConfig = configManager.getUpdateConfig();
+        UPDATE_URL = updateConfig.UPDATE_URL || 'http://124.70.184.0:8100/';
+
+        autoUpdater.setFeedURL({
+            provider: 'generic',
+            url: UPDATE_URL
+        });
+        console.log('更新源已配置:', UPDATE_URL);
+    } catch (err) {
+        console.error('读取更新配置失败，使用默认地址:', err.message);
+        autoUpdater.setFeedURL({
+            provider: 'generic',
+            url: UPDATE_URL
+        });
+    }
+}
+app.whenReady().then(async () => {
+    // if (updateConfig.AUTO_CHECK !== false) {
+    //     // 启动时检查
+    //     setTimeout(() => {
+    //         autoUpdater.checkForUpdatesAndNotify().catch(err => {
+    //             console.error('检查更新失败:', err.message);
+    //         });
+    //     }, 3000);
+    //
+    //     // 定时检查（如果配置了间隔）
+    //     if (updateConfig.CHECK_INTERVAL > 0) {
+    //         setInterval(() => {
+    //             autoUpdater.checkForUpdatesAndNotify().catch(err => {
+    //                 console.error('定时检查更新失败:', err.message);
+    //             });
+    //         }, updateConfig.CHECK_INTERVAL);
+    //     }
+    // }
+    try {
+        initUpdater();
         const localPort = configManager.getLocalPort();
         await startServer(localPort, ELECTRON_TOKEN);  // 启动 Express 服务器
         createWindow();
+        //  窗口创建后再检查更新（避免更新弹窗在窗口前弹出）
+        if (updateConfig?.AUTO_CHECK !== false) {
+            setTimeout(() => {
+                autoUpdater.checkForUpdatesAndNotify().catch(err => {
+                    console.error('检查更新失败:', err.message);
+                });
+            }, 5000); // 延迟 5 秒，等窗口加载完成
+        }
     } catch (err) {
         console.error('服务器启动失败:', err);
         app.quit();

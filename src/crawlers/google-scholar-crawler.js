@@ -2,7 +2,7 @@
 const BaseCrawler = require('../core/base-crawler');
 const fs = require('fs');
 const path = require('path');
-const { isAnyCaptchaPresent, handleAnyCaptcha } = require('../utils/crawler-utils');
+const { isAnyCaptchaPresent, handleAnyCaptcha,checkGoogleAntiBot } = require('../utils/crawler-utils');
 const {humanClick, humanType, randomDelay} = require('../utils/playwright-utils');
 
 /**
@@ -74,6 +74,8 @@ class GoogleScholarCrawler extends BaseCrawler {
         }
 
         this.logger.info(`输出目录已创建: ${this.currentOutputDir}`);
+
+
     }
     /**
      * 停止爬虫
@@ -217,6 +219,15 @@ class GoogleScholarCrawler extends BaseCrawler {
      * 登录（Google Scholar 不需要）
      */
     async login() {
+        try {
+            // 导航到 Google Scholar
+            await this.page.goto('https://scholar.google.com', {
+                timeout: 30000,
+                waitUntil: 'networkidle'
+            });
+        }catch (e){
+            throw new Error('访问谷歌学术失败')
+        }
         this.logger.info('Google Scholar 无需登录');
         return Promise.resolve();
     }
@@ -272,6 +283,13 @@ class GoogleScholarCrawler extends BaseCrawler {
                 const result = await this._searchSingleKeyword(keyword, options);
                 results.push(result);
             } catch (error) {
+                if (error.message === '遭遇谷歌反脚本检测，检索中断') {
+                    this.logger.error(error.message);
+                    // 记录为失败数据（带特殊标记）
+                    const failedPaper = originalPapers[i] || {title: keyword};
+                    this._recordFailedPaper(failedPaper, error.message);
+                    throw error; // 重新抛出，中断外层循环
+                }
                 this.logger.error(`关键词 "${keyword}" 搜索失败: ${error.message}`);
                 // 记录失败时也要关联原始论文
                 const failedPaper = originalPapers[i] || {title: keyword};
@@ -868,11 +886,11 @@ class GoogleScholarCrawler extends BaseCrawler {
     async _searchSingleKeyword(keyword, options) {
         this.logger.info(`正在搜索: ${keyword}`);
 
-        // 导航到 Google Scholar
-        await this.page.goto('https://scholar.google.com', {
-            timeout: 30000,
-            waitUntil: 'networkidle'
-        });
+        // // 导航到 Google Scholar
+        // await this.page.goto('https://scholar.google.com', {
+        //     timeout: 30000,
+        //     waitUntil: 'networkidle'
+        // });
 
         // 检查验证码
         if (await isAnyCaptchaPresent(this.page)) {
@@ -906,9 +924,13 @@ class GoogleScholarCrawler extends BaseCrawler {
      */
     async _extractSearchResults(keyword) {
         try {
+
+            const antiBotCheck = await checkGoogleAntiBot(this.page, this.logger);
+            if (antiBotCheck.isBlocked) {
+                throw new Error('遭遇谷歌反脚本检测，检索中断');
+            }
             // 等待搜索结果加载
             await this._waitForSearchOrCaptcha();
-
             // 查找结果列表
             const searchResults = this.page.locator('div[data-cid] .gs_ri, .gs_r .gs_ri, .gs_scl .gs_ri');
             const resultCount = await searchResults.count();
@@ -1721,6 +1743,7 @@ class GoogleScholarCrawler extends BaseCrawler {
             isRunningRef: () => this.state?.isRunning ?? true
         };
     }
+
 }
 
 module

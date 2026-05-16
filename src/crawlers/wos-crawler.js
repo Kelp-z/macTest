@@ -34,6 +34,9 @@ class WosCrawler extends BaseCrawler {
         this.shouldStop = false;
         this.currentOutputDir = null;
         this.manualModeActive = false;
+        this.availableLinks = [];      // 存储所有可用镜像链接
+        this.currentLinkIndex = -1;    // 当前使用的链接索引
+        this.middlePage = null;        // 中间页引用
     }
     async beforeCrawl() {
         await super.beforeCrawl();
@@ -168,7 +171,7 @@ class WosCrawler extends BaseCrawler {
     /**
      * 导航到 WoS 页面(使用学术猫工具)
      */
-    async _navigateToWos(onManualModeRequired) {
+    async   _navigateToWos(onManualModeRequired) {
         this.logger.info('正在导航到 Web of Science...');
 
         const target = {
@@ -185,7 +188,29 @@ class WosCrawler extends BaseCrawler {
         const captchaDir = getSafeProjectPath(this.searchConfig.CAPTCHA_DIR_NAME);
 
 
-        const wosPage = await academicCatNavigateToTarget(
+        // const wosPage = await academicCatNavigateToTarget(
+        //     this.page,
+        //     this.context,
+        //     {
+        //         BASE_URL: this.searchConfig.BASE_URL,
+        //         CAPTCHA_DIR: captchaDir,
+        //         SCREENSHOT_DIR_NAME: screenshotDir
+        //     },
+        //     target,
+        //     onManualModeRequired,
+        //     (msg) => this.logger.info(msg),
+        //     () => this.shouldStop,
+        //     (active) => {
+        //         this.manualModeActive = active;
+        //     }
+        // );
+        //
+        // if (wosPage && wosPage !== this.page) {
+        //     this.page = wosPage;
+        // }
+        //
+        // this.logger.info('已成功到达 WoS 搜索页面');
+        const result = await academicCatNavigateToTarget(
             this.page,
             this.context,
             {
@@ -201,9 +226,14 @@ class WosCrawler extends BaseCrawler {
                 this.manualModeActive = active;
             }
         );
+        // 保存中间页和可用链接信息，用于后续切换站点
+        this.middlePage = result.middlePage || null;
+        this.availableLinks = result.availableLinks || [];
+        this.currentLinkIndex = result.currentLinkIndex || 0;
+        this.allFilteredLinks = result.allFilteredLinks || []; // 保存所有过滤后的链接
 
-        if (wosPage && wosPage !== this.page) {
-            this.page = wosPage;
+        if (result.page && result.page !== this.page) {
+            this.page = result.page;
         }
 
         this.logger.info('已成功到达 WoS 搜索页面');
@@ -623,6 +653,7 @@ class WosCrawler extends BaseCrawler {
      * 检索单篇论文
      */
     async _searchSinglePaper(keyword) {
+        await this._closeCookiePopup()
         if (!this.isBrowserAvailable()) {
             throw new Error('浏览器不可用，无法执行搜索');
         }
@@ -683,9 +714,36 @@ class WosCrawler extends BaseCrawler {
         await this._handleCookieConsent();
 
 
+        const hasAccessDenied = await this._checkAccessDenied();
+        if (hasAccessDenied) {
+            this.logger.warn('检测到权限错误："You have no access to the requested resource"，尝试切换站点...');
 
+            // 尝试切换到下一个可用站点
+            const switched = await this._trySwitchToNextSite();
+            if (switched) {
+                this.logger.info('站点切换成功，重新执行搜索');
+                // 递归重新搜索
+                return this._searchSinglePaper(keyword);
+            } else {
+                this.logger.error('所有可用站点均出现权限错误');
+                throw new Error('所有镜像站点均无搜索权限');
+            }
+        }
+        const hasServerError = await this.checkForServerError();
+        if (hasServerError) {
+            this.logger.warn('检测到服务器错误："You have no access to the requested resource"，尝试切换站点...');
 
-
+            // 尝试切换到下一个可用站点
+            const switched = await this._trySwitchToNextSite();
+            if (switched) {
+                this.logger.info('站点切换成功，重新执行搜索');
+                // 递归重新搜索
+                return this._searchSinglePaper(keyword);
+            } else {
+                this.logger.error('所有可用站点均出现服务器错误');
+                throw new Error('所有镜像站点均出现服务器错误');
+            }
+        }
         // 判断是否有结果
         const hasResults = await this._checkSearchResults();
 
@@ -697,6 +755,7 @@ class WosCrawler extends BaseCrawler {
             let remark = '';
             if (hasServerError) {
                 remark = '服务器错误，可能遭遇反爬检测';
+
             } else if (isAccessDenied) {
                 remark = '无权限访问此资源';
             }
@@ -716,6 +775,103 @@ class WosCrawler extends BaseCrawler {
 
         // 提取详细信息
         return await this._extractPaperDetails(keyword);
+    }
+    /**
+     * 尝试切换到下一个可用站点
+     * @returns {Promise<boolean>} 是否切换成功
+     */
+    async _trySwitchToNextSite() {
+        if (!this.allFilteredLinks || this.allFilteredLinks.length === 0) {
+            this.logger.error('没有可用的镜像链接列表');
+            return false;
+        }
+
+        // 关闭当前无权限的页面
+        try {
+            await this.page.close();
+        } catch (e) {
+            this.logger.warn('关闭当前页面失败:', e.message);
+        }
+
+        // 尝试剩余的链接
+        for (let i = this.currentLinkIndex + 1; i < this.allFilteredLinks.length; i++) {
+            if (this.shouldStop || !this.state.isRunning) {
+                this.logger.info('检测到停止信号，终止站点切换');
+                return false;
+            }
+
+            const link = this.allFilteredLinks[i];
+            this.logger.info(`\n[切换站点 ${i + 1}/${this.allFilteredLinks.length}] 正在打开: ${link.text} (${link.href})`);
+
+            let newTab;
+            try {
+                [newTab] = await Promise.all([
+                    this.context.waitForEvent('page', { timeout: 60000 }),
+                    this.middlePage.locator('div.shuoming a').nth(link.index - 1).click()
+                ]);
+                this.logger.info(`新页面已创建，初始URL: ${newTab.url()}`);
+            } catch (e) {
+                this.logger.warn(`点击链接后未检测到新页面: ${e.message}`);
+                continue;
+            }
+
+            // 检测维护提示
+            try {
+                const errorLocator = newTab.locator('text=/该入口.*维护中|请重新进入|下载量已达.*上限|本日下载量.*上限|请联系单位管理员/i');
+                await errorLocator.first().waitFor({ state: 'visible', timeout: 5000 });
+                const errorText = await errorLocator.first().textContent();
+                this.logger.warn(`⛔ 检测到限制提示: "${errorText}"`);
+                await newTab.close().catch(() => {});
+                continue;
+            } catch (e) {
+                // 无限制提示，继续检查
+            }
+
+            try {
+                await newTab.waitForLoadState('networkidle', { timeout: 60000 });
+                await newTab.waitForTimeout(3000);
+
+                const url = newTab.url();
+                if (url === 'about:blank') {
+                    await newTab.close().catch(() => {});
+                    continue;
+                }
+
+                // 检查页面就绪
+                let isValid = false;
+                for (let retry = 0; retry < 2; retry++) {
+                    try {
+                        isValid = await this._waitForWosReady(newTab, 30000);
+                        if (isValid) break;
+                    } catch (e) {
+                        // 忽略
+                    }
+                    if (retry === 0) {
+                        this.logger.info('首次检测失败，等待 5 秒后重试...');
+                        await new Promise(r => setTimeout(r, 5000));
+                    }
+                }
+
+                if (isValid) {
+                    this.logger.info(`✅ 成功切换到新站点: ${url}`);
+                    this.page = newTab;
+                    this.currentLinkIndex = i;
+
+                    // 关闭旧的中间页（可选）
+                    // await this.middlePage.close().catch(() => {});
+
+                    return true;
+                } else {
+                    await newTab.close().catch(() => {});
+                }
+            } catch (error) {
+                this.logger.error(`❌ 加载失败 (${newTab.url()}): ${error.message}`);
+                await newTab.close().catch(() => {});
+            }
+        }
+
+        this.logger.error('所有剩余站点均无法使用');
+        return false;
     }
     /**
      * 处理 Cookie 弹窗

@@ -38,6 +38,7 @@ class BaseCrawler {
             await this.beforeCrawl();
             await this.initBrowser();
 
+
             this.updateProgress(10, '开始登录');
             await this.login();
 

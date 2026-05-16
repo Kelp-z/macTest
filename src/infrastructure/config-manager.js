@@ -50,7 +50,17 @@ class ConfigManager {
     getConfig() {
         return {...this.config};
     }
-
+    /**
+     * 获取更新配置
+     * @returns {Object} 更新配置
+     */
+    getUpdateConfig() {
+        return this.config.update || {
+            UPDATE_URL: 'http://124.70.184.0:8100/',
+            AUTO_CHECK: true,
+            CHECK_INTERVAL: 3600000
+        };
+    }
     /**
      * 获取特定爬虫的配置
      * @param {string} crawlerType - 爬虫类型 ('google', 'scopus', 'wos', etc.)
