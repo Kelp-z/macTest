@@ -1,6 +1,8 @@
 
 {
   "LOG_BASE_DIR": "../log",
+  "AUTO_CHECK": true,
+  "AUTO_DOWNLOAD": true,
   "backend": {
     "LOCAL_PORT": 3000,
     "SPRING_PORT": 8080,

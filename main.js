@@ -77,6 +77,7 @@ ipcMain.handle('log-error', (event, msg) => {
 // 从配置读取更新源
 let updateConfig = null;
 let UPDATE_URL =  'http://124.70.184.0:8100/';
+let AUTO_DOWNLOAD = true;  // 默认自动下载
 
 // 设置更新源
 autoUpdater.setFeedURL({
@@ -89,21 +90,40 @@ console.log('更新源已配置:', UPDATE_URL);
 // 发现新版本
 autoUpdater.on('update-available', (info) => {
     console.log('[update] 发现新版本:', info.version);
-    dialog.showMessageBox({
-        type: 'info',
-        title: '发现新版本',
-        message: `发现新版本 ${info.version}，是否下载？`,
-        buttons: ['下载', '稍后']
-    }).then(({ response }) => {
-        if (response === 0) {
-            console.log('[update] 用户点击下载，开始 downloadUpdate...');
-            autoUpdater.downloadUpdate().catch(err => {
-                console.error('[update] 下载失败:', err);
-                // 关键：弹出错误，否则用户不知道发生了什么
-                dialog.showErrorBox('下载更新失败', err.message || err.toString());
-            });
-        }
-    });
+    if (AUTO_DOWNLOAD) {
+        // 自动下载模式：提示用户即将自动下载
+        dialog.showMessageBox({
+            type: 'info',
+            title: '发现新版本',
+            message: `发现新版本 ${info.version}，将自动下载。\n下载完成后将提示您安装。`,
+            buttons: ['知道了']
+        });
+        // 自动开始下载（不需要用户点击）
+        autoUpdater.downloadUpdate().catch(err => {
+            console.error('[update] 自动下载失败:', err);
+            dialog.showErrorBox('下载更新失败', err.message || err.toString());
+        });
+    } else {
+        // 手动模式：询问用户是否下载
+        dialog.showMessageBox({
+            type: 'info',
+            title: '发现新版本',
+            message: `发现新版本 ${info.version}，是否下载？\n（文件较大，请保持网络畅通）`,
+            buttons: ['下载', '稍后'],
+            defaultId: 0,
+            cancelId: 1
+        }).then(({ response }) => {
+            if (response === 0) {
+                console.log('[update] 用户确认下载');
+                autoUpdater.downloadUpdate().catch(err => {
+                    console.error('[update] 下载失败:', err);
+                    dialog.showErrorBox('下载更新失败', err.message || err.toString());
+                });
+            } else {
+                console.log('[update] 用户选择稍后');
+            }
+        });
+    }
 });
 
 // 下载进度（给用户明确反馈）
@@ -162,12 +182,14 @@ function initUpdater() {
     try {
         updateConfig = configManager.getUpdateConfig();
         UPDATE_URL = updateConfig.UPDATE_URL || 'http://124.70.184.0:8100/';
+        AUTO_DOWNLOAD = updateConfig.AUTO_DOWNLOAD !== false;  // 默认 true
 
         autoUpdater.setFeedURL({
             provider: 'generic',
             url: UPDATE_URL
         });
-        console.log('更新源已配置:', UPDATE_URL);
+        console.log('[system] 更新源已配置:', UPDATE_URL);
+        console.log('[system] 自动下载更新:', AUTO_DOWNLOAD);
     } catch (err) {
         console.error('读取更新配置失败，使用默认地址:', err.message);
         autoUpdater.setFeedURL({
@@ -205,7 +227,7 @@ app.whenReady().then(async () => {
                 autoUpdater.checkForUpdatesAndNotify().catch(err => {
                     console.error('检查更新失败:', err.message);
                 });
-            }, 5000); // 延迟 5 秒，等窗口加载完成
+            }, 5000);
         }
     } catch (err) {
         console.error('服务器启动失败:', err);
