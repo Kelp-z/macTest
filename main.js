@@ -1,6 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 
-const { startServer, cleanupAllCrawlers} = require('./server');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -8,6 +7,72 @@ const { machineIdSync  } = require('node-machine-id');
 const crypto = require('crypto');
 const configManager = require('./src/infrastructure/config-manager');
 const {autoUpdater} = require("electron-updater");
+const log = require('electron-log');
+
+
+// 读取配置
+const config = configManager.getConfig();
+
+// 计算日志目录：优先用户配置，其次尝试安装目录，最后回退文档目录
+let logBaseDir = config.LOG_BASE_DIR;
+
+if (!logBaseDir) {
+    // 打包后：安装目录（exe 所在目录）；开发时：项目根目录
+    const baseDir = app.isPackaged
+        ? path.dirname(process.execPath)   // 如 C:\Program Files\SPM_Crawler 或 D:\SPM_Crawler
+        : __dirname;                        // 开发时：项目根目录 D:\springboot\spm\SPM_Retriever
+
+    const installLogDir = path.join(baseDir, 'log');
+
+    try {
+        // 尝试创建目录
+        if (!fs.existsSync(installLogDir)) {
+            fs.mkdirSync(installLogDir, { recursive: true });
+        }
+        // 关键：测试是否真的有写入权限
+        const testFile = path.join(installLogDir, '.write-test');
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+
+        logBaseDir = installLogDir;
+        console.log(`[system] 日志目录（安装目录）: ${logBaseDir}`);
+    } catch (err) {
+        // 无权限（如 C:\Program Files），回退到文档目录
+        console.warn(`[system] 安装目录无写入权限，回退到文档目录: ${err.message}`);
+        logBaseDir = path.join(app.getPath('documents'), 'SPM_Crawler', 'logs');
+        fs.mkdirSync(logBaseDir, { recursive: true });
+    }
+}
+
+// 同步给全局
+global.globalConfig = {
+    ...config,
+    LOG_BASE_DIR: logBaseDir
+};
+const { startServer, cleanupAllCrawlers} = require('./server');
+// 统一文件名
+const date = new Date().toISOString().slice(0, 10);
+const logFile = path.join(logBaseDir, `app_${date}.log`);
+
+// 配置主进程 electron-log
+log.transports.file.resolvePathFn  = () => logFile;
+
+// 替换 console
+Object.assign(console, log.functions);
+
+// 标记系统日志
+const originalLog = console.log;
+console.log = (...args) => {
+    originalLog('[system]', ...args);
+};
+
+// 渲染进程日志 IPC
+ipcMain.handle('log-info', (event, msg) => {
+    console.log(`[renderer] ${msg}`);
+});
+ipcMain.handle('log-error', (event, msg) => {
+    console.error(`[renderer] ${msg}`);
+});
 
 // 从配置读取更新源
 let updateConfig = null;
@@ -23,36 +88,65 @@ console.log('更新源已配置:', UPDATE_URL);
 
 // 发现新版本
 autoUpdater.on('update-available', (info) => {
+    console.log('[update] 发现新版本:', info.version);
     dialog.showMessageBox({
         type: 'info',
         title: '发现新版本',
         message: `发现新版本 ${info.version}，是否下载？`,
         buttons: ['下载', '稍后']
     }).then(({ response }) => {
-        if (response === 0) autoUpdater.downloadUpdate();
+        if (response === 0) {
+            console.log('[update] 用户点击下载，开始 downloadUpdate...');
+            autoUpdater.downloadUpdate().catch(err => {
+                console.error('[update] 下载失败:', err);
+                // 关键：弹出错误，否则用户不知道发生了什么
+                dialog.showErrorBox('下载更新失败', err.message || err.toString());
+            });
+        }
     });
 });
 
-// 下载进度
+// 下载进度（给用户明确反馈）
 autoUpdater.on('download-progress', (progressObj) => {
-    console.log(`下载进度: ${progressObj.percent}%`);
+    const percent = progressObj.percent.toFixed(1);
+    const mb = (progressObj.transferred / 1024 / 1024).toFixed(1);
+    const total = (progressObj.total / 1024 / 1024).toFixed(1);
+    console.log(`[update] 进度: ${percent}% (${mb}MB / ${total}MB)`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-progress', {
+            percent: parseFloat(percent),
+            transferred: parseFloat(mb),
+            total: parseFloat(total)
+        });
+    }
 });
 
 // 下载完成
-autoUpdater.on('update-downloaded', () => {
+autoUpdater.on('update-downloaded', (info) => {
+    console.log('[update] 下载完成:', info.version);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-downloaded', {version: info.version});
+    }
     dialog.showMessageBox({
         type: 'info',
         title: '更新就绪',
-        message: '新版本已下载，是否立即安装？',
-        buttons: ['安装', '稍后']
+        message: `新版本 ${info.version} 已下载完成，是否立即安装并重启？`,
+        buttons: ['立即安装', '稍后']
     }).then(({ response }) => {
-        if (response === 0) autoUpdater.quitAndInstall();
+        if (response === 0) {
+            console.log('[update] 用户确认安装');
+            autoUpdater.quitAndInstall(false, true);
+        }
     });
 });
 
-// 错误处理
+// 全局错误捕获
 autoUpdater.on('error', (err) => {
-    console.error('更新检查失败:', err.message);
+    console.error('[update] 全局错误:', err);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-error', err.message || err.toString());
+    }
+    dialog.showErrorBox('自动更新错误', err.message || err.toString());
 });
 
 let mainWindow;
