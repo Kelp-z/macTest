@@ -212,8 +212,8 @@ class ScopusCrawler extends BaseCrawler {
         );
 
         // 更新 page 引用（如果导航打开了新标签页）
-        if (scopusPage && scopusPage !== this.page) {
-            this.page = scopusPage;
+        if (scopusPage && scopusPage.page && scopusPage.page !== this.page) {
+            this.page = scopusPage.page;   // 取对象里的 page 属性
         }
 
         this.logger.info('已成功到达 Scopus 搜索页面');

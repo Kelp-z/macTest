@@ -228,9 +228,16 @@ class BaseCrawler {
      * @param {number} max - 最大延迟时间（毫秒）
      */
     async safeDelay(min = 1000, max = 3000) {
-        // 检查浏览器是否仍然打开
-        if (!this.page || !this.page.context() || this.page.isClosed()) {
-            // 只打印一次，避免刷屏；可以使用一个标志
+        // 检查 page 是否是有效的 Playwright Page 对象
+        if (!this.page || typeof this.page.isClosed !== 'function') {
+            if (!this._loggedPageClosed) {
+                this.logger.warn('页面无效，跳过延迟');
+                this._loggedPageClosed = true;
+            }
+            return;
+        }
+
+        if (this.page.isClosed()) {
             if (!this._loggedPageClosed) {
                 this.logger.warn('页面已关闭，跳过延迟');
                 this._loggedPageClosed = true;
