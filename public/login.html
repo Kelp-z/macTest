@@ -518,15 +518,18 @@
     }
 
     // 初始化
-    function init() {
+    async function init() {
         footerSpan.innerText = '© 2025 系统管理 | 技术支持';
-        getCode();
+        await loadConfig();  // 等待配置加载完成
+        await getCode();
         loadRemembered();
 
         captchaImg.addEventListener('click', getCode);
         loginBtn.addEventListener('click', handleLogin);
         [usernameInput, passwordInput, codeInput].forEach(input => {
-            if (input) input.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+            if (input) input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') handleLogin();
+            });
         });
     }
 
