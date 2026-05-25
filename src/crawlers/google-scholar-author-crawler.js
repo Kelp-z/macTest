@@ -12,7 +12,7 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
     constructor() {
         super('google-author');
 
-        const crawlerConfig = this.configManager.getCrawlerConfig('google-scholar-author');
+        const crawlerConfig = this.configManager.getCrawlerConfig('google-author');
         this.searchConfig = {
             OUTPUT_BASE_DIR_NAME: crawlerConfig.OUTPUT_BASE_DIR_NAME ?? 'output/google_authors'
         };

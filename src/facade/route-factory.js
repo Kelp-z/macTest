@@ -25,6 +25,7 @@ function registerCrawlerRoutes({
         }
 
         const taskId = `${facade.capabilities.source}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const taskType = req.body.taskType || `${facade.capabilities.source.toUpperCase()}_SEARCH`;
 
         const callbacks = {};
         let taskCaptchaDir;
@@ -89,7 +90,8 @@ function registerCrawlerRoutes({
             };
         }
         facade.start(inputList, {
-            taskType: req.body.taskType,
+            taskId,
+            taskType,
             generateExcel: req.body.generateExcel,
             outputDir: req.body.outputDir,
             ...(taskCaptchaDir ? { captchaDir: taskCaptchaDir } : {}),

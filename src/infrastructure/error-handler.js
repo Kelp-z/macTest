@@ -1,6 +1,7 @@
 // src/infrastructure/error-handler.js
 const path = require('path');
-
+const ConfigManager = require('./config-manager');
+const fs = require('fs');
 class ErrorHandler {
     constructor() {
         this.errorCodes = {
@@ -14,22 +15,27 @@ class ErrorHandler {
             BROWSER_CLOSED_ERROR: 'BROWSER_CLOSED_ERROR',
             CAPTCHA_MANUAL_TIMEOUT:'CAPTCHA_MANUAL_TIMEOUT'
         };
+        this.configManager = ConfigManager;
     }
 
     /**
      * 格式化错误对象
      * @param {Error} error - 原始错误对象
      * @param {string} crawlerType - 爬虫类型
+     * @param {Object} options - 额外选项（taskId, taskType等）
      * @returns {Object} 格式化后的错误对象
      */
-    format(error, crawlerType) {
+    format(error, crawlerType, options = {}) {
         const errorCode = this._classifyError(error);
+        const { taskId = null, taskType = null } = options;
 
         const formattedError = {
             code: errorCode,
             message: this._getUserMessage(errorCode, error),
             detail: this._getErrorDetail(error),
             crawlerType,
+            taskType,
+            taskId,
             timestamp: new Date().toISOString(),
             screenshotPath: error.screenshotPath || null
         };
@@ -167,7 +173,44 @@ class ErrorHandler {
     getErrorCodes() {
         return {...this.errorCodes};
     }
+    /**
+     * 获取错误截图目录路径
+     * @returns {string} 错误截图目录的绝对路径
+     */
+    getErrorScreenshotDir() {
+        const screenshotDirName = this.configManager.get('ERROR_SCREENSHOT_DIR_NAME', 'screenshots');
+        const screenshotDir = path.join(process.cwd(), screenshotDirName);
 
+        // 确保目录存在
+        if (!fs.existsSync(screenshotDir)) {
+            try {
+                fs.mkdirSync(screenshotDir, { recursive: true });
+                console.log(`[错误截图] 创建目录: ${screenshotDir}`);
+            } catch (err) {
+                console.error(`[错误截图] 创建目录失败: ${err.message}`);
+            }
+        }
+
+        return screenshotDir;
+    }
+    /**
+     * 生成错误截图文件名
+     * @param {string} crawlerType - 爬虫类型
+     * @param {string} taskType - 任务类型
+     * @param {string} taskId - 任务ID（可选）
+     * @returns {string} 截图文件名
+     */
+    generateScreenshotFilename(crawlerType, taskType, taskId = null) {
+        const timestamp = Date.now();
+        const randomStr = Math.random().toString(36).substring(2, 8);
+
+        // 清理任务类型和爬虫类型，使其适合作为文件名
+        const cleanCrawlerType = crawlerType.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const cleanTaskType = taskType ? taskType.replace(/[^a-z0-9]/gi, '_').toUpperCase() : 'UNKNOWN';
+        const taskIdPart = taskId ? `_${taskId.substring(0, 12)}` : '';
+
+        return `error_${cleanTaskType}${taskIdPart}_${timestamp}.png`;
+    }
     /**
      * 判断是否为浏览器关闭错误
      */

@@ -560,13 +560,14 @@ class BrowserManager {
      */
     async createPage(browser, contextOptions = {}) {
         const {
-            userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
             acceptDownloads = true,
             downloadsPath = null,
             locale = 'zh-CN',
             timezoneId,
             timezone_id,
-            viewport = { width: 1280, height: 800 }
+            // viewport = { width: 1280, height: 800 }
+            viewport =  null
         } = contextOptions;
 
         const context = await browser.newContext({

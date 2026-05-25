@@ -9,7 +9,20 @@ const configManager = require('./src/infrastructure/config-manager');
 const {autoUpdater} = require("electron-updater");
 const log = require('electron-log');
 
-
+// 全局未捕获异常捕获 —— 防止进程崩溃
+process.on('uncaughtException', (err) => {
+    console.error('[全局] 未捕获的异常:', err.message);
+    // 不要调用 app.quit()，让应用继续运行
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[全局] 未处理的 Promise 拒绝:', reason?.message || reason);
+    // 特别处理 playwright-extra 的 CDP 错误
+    if (reason && typeof reason.message === 'string' &&
+        reason.message.includes('Target page, context or browser has been closed')) {
+        console.warn('[全局] 忽略浏览器已关闭的残余 CDP 命令');
+        return;  // 吞掉这个错误，不崩溃
+    }
+});
 // 读取配置
 const config = configManager.getConfig();
 

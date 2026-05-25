@@ -563,6 +563,7 @@ class WosAuthorCrawler extends BaseCrawler {
             } catch (error) {
                 if (this.errorHandler.isBrowserClosedError(error)) {
                     this.logger.error('浏览器已关闭，终止任务');
+                    throw new Error('浏览器已关闭，终止任务，无法继续检索');
                     break;
                 }
 

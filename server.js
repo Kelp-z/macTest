@@ -42,7 +42,9 @@ const getSafePath = (relativePath) => {
     // 开发环境使用 process.cwd()
     return path.join(process.cwd(), relativePath);
 };
-const SCREENSHOTS_DIR = getSafePath('output/screenshots');
+
+const screenshotDirName = configManager.get('ERROR_SCREENSHOT_DIR_NAME', 'screenshots');
+const SCREENSHOTS_DIR = path.join(process.cwd(), screenshotDirName);
 try {
     ensureDir(SCREENSHOTS_DIR); // 确保截图目录存在
     console.log(`截图目录: ${SCREENSHOTS_DIR}`);

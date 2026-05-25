@@ -5,6 +5,13 @@ function createWosCrawlerFacade() {
   const crawler = new WosCrawler();
   return {
     async start(keywords, options = {}) {
+      // 生成任务ID和类型
+      const taskId = options.taskId || `wos_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const taskType = options.taskType || 'WOS_SEARCH';
+      // 设置任务信息
+      crawler.taskId = taskId;
+      crawler.taskType = taskType;
+
       crawler.state.isRunning = true;
       crawler.state.progress = 0;
       crawler.state.error = null;
@@ -23,14 +30,23 @@ function createWosCrawlerFacade() {
           ...extractedData,
           ...saveResult
         };
-        crawler.state.progress = 100;
+        // 检查是否全部失败
+        await crawler.checkAndScreenshotAllFailed(extractedData);
+
         return {
           ...saveResult,
           successList: extractedData.successList,
           failedList: extractedData.failedList
         };
       } catch (error) {
-        crawler.state.error = crawler.errorHandler.format(error, crawler.crawlerType);
+        crawler.logger.error(`爬虫执行出错: ${error.message}`);
+        if (!crawler.state.error) {
+          crawler.state.error = crawler.errorHandler.format(error, crawler.crawlerType, {
+            taskId,
+            taskType
+          });
+          await crawler.takeErrorScreenshot();
+        }
         crawler.state.isRunning = false;
         await crawler.cleanup();
         throw error;

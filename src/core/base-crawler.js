@@ -5,7 +5,8 @@ const ErrorHandler = require('../infrastructure/error-handler');
 const Logger = require('../infrastructure/logger');
 const ConfigManager  = require('../infrastructure/config-manager.js');
 const { createInterventionSession }  = require('../facade/intervention-session.js');
-
+const path = require('path');
+const fs = require('fs');
 class BaseCrawler {
     constructor(crawlerType) {
         this.crawlerType = crawlerType;
@@ -24,6 +25,21 @@ class BaseCrawler {
             error: null,
             result: null
         };
+        // 任务相关信息
+        this.taskId = null;
+        this.taskType = null;
+    }
+    /**
+     * 生成任务ID和任务类型
+     * @param {Object} options - 选项对象
+     * @returns {Object} { taskId, taskType }
+     */
+    _generateTaskInfo(options = {}) {
+        const taskId = options.taskId || `${this.crawlerType}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const defaultTaskType = `${this.crawlerType.toUpperCase()}_SEARCH`;
+        const taskType = options.taskType || defaultTaskType;
+
+        return { taskId, taskType };
     }
 
     async crawl(params){
@@ -34,6 +50,13 @@ class BaseCrawler {
         this.state.process = 0;
         this.state.logs = [];
         this.state.error = null;
+        // 提取参数
+        const { keywords, options = {} } = params;
+
+        // 生成任务信息（如果外部已提供则使用外部的）
+        const { taskId, taskType } = this._generateTaskInfo(options);
+        this.taskId = taskId;
+        this.taskType = taskType;
         try{
             await this.beforeCrawl();
             await this.initBrowser();
@@ -59,10 +82,16 @@ class BaseCrawler {
                 ...extractedData,
                 ...saveResult
             };
+            // 检查是否全部失败，如果是则截图
+            await this.checkAndScreenshotAllFailed(extractedData);
 
             return this.state.result;
         }catch(error){
-            this.state.error = this.errorHandler.format(error, this.crawlerType);
+            this.logger.error(`爬虫执行出错: ${error.message}`);
+            this.state.error = this.errorHandler.format(error, this.crawlerType, {
+                taskId: this.taskId,
+                taskType: this.taskType
+            });
             await this.takeErrorScreenshot();
             throw this.state.error;
         }finally {
@@ -105,35 +134,43 @@ class BaseCrawler {
                     this.crawlerType
                 );
             }
-            /*
-             立即停止爬虫
-            */
-            this.stop();
+            // 只标记停止，不调用 this.stop()
+            // this.stop() 会调 cleanup() 导致 browser.close()，但浏览器已经断了
+            this.state.isRunning = false;
 
-            //  如果当前有等待操作，需要中断它们（如等待元素、延迟等）
-            if (this.page) {
-                try {
-                    // 中断页面上的等待操作
-                    this.page.close().catch(() => {});
-                } catch (e) {
-                    // 忽略页面关闭错误
-                }
+            // 取消干预会话
+            if (this.interventionSession) {
+                this.interventionSession.cancelSource(this.crawlerType, '浏览器异常关闭');
             }
+
+
+            this.page = null;
+            this.context = null;
+            this.browser = null;
         });
     }
 
     async cleanup(){
-        if (this.browser){
-            await this.browserManager.close(this.browser);
+        if (!this.browser) return;
+
+        try {
+            // 检查浏览器是否还连着
+            if (this.browser.isConnected && this.browser.isConnected()) {
+                await this.browserManager.close(this.browser);
+            } else {
+                this.logger.info('浏览器已断开，跳过关闭');
+            }
+        } catch (error) {
+            this.logger.warn(`清理浏览器时出错: ${error.message}`);
+        } finally {
+            // 清空引用，避免后续代码误用
+            this.browser = null;
+            this.page = null;
+            this.context = null;
         }
     }
 
-    async takeErrorScreenshot(){
-        if (this.page){
-            return await this.browserManager.takeScreenshot(this.page,'error');
-        }
-        return null;
-    }
+
 
     updateProgress(progress,message){
         this.state.progress = progress;
@@ -348,6 +385,84 @@ class BaseCrawler {
         this.interventionSession.cancelSource(this.crawlerType, reason);
         this.logger.info(`干预会话已取消: ${reason}`);
     }
+    /**
+     * 检查是否全部失败，如果是则截图
+     * @param {Object} extractedData - 提取的数据
+     */
+    async checkAndScreenshotAllFailed(extractedData) {
+        try {
+            if (!extractedData) return;
+
+            // 检查是否有成功列表和失败列表
+            const successList = extractedData.successList || [];
+            const failedList = extractedData.failedList || [];
+
+            // 如果成功列表为空且失败列表不为空，说明全部失败
+            if (successList.length === 0 && failedList.length > 0) {
+                this.logger.warn(`所有检索均失败（共${failedList.length}条），正在截取错误现场...`);
+
+                // 创建错误对象并截图
+                const allFailedError = new Error(`全部检索失败: 成功0条，失败${failedList.length}条`);
+                this.state.error = this.errorHandler.format(allFailedError, this.crawlerType, {
+                    taskId: this.taskId,
+                    taskType: this.taskType
+                });
+
+                await this.takeErrorScreenshot();
+
+                this.logger.info('全部失败截图已完成');
+            }
+        } catch (error) {
+            this.logger.warn(`检查全部失败状态时出错: ${error.message}`);
+        }
+    }
+    /**
+     * 截取错误截图并保存到指定目录
+     * @returns {Promise<string|null>} 截图路径
+     */
+    async takeErrorScreenshot(){
+        if (!this.page || typeof this.page.isClosed !== 'function' || this.page.isClosed()) {
+            this.logger.warn('页面对象无效或已关闭，跳过截图');
+            return null;
+        }
+        // 检查浏览器是否还连接
+        if (!this.browser || !this.browser.isConnected || !this.browser.isConnected()) {
+            this.logger.warn('浏览器已断开，跳过截图');
+            return null;
+        }
+        try {
+            // 获取错误截图目录
+            const screenshotDir = this.errorHandler.getErrorScreenshotDir();
+
+            // 生成截图文件名
+            const filename = this.errorHandler.generateScreenshotFilename(
+                this.crawlerType,
+                this.taskType,
+                this.taskId
+            );
+
+            const filepath = path.join(screenshotDir, filename);
+            // 执行截图前再次检查页面状态
+            if (this.page.isClosed()) {
+                this.logger.warn('截图前页面已关闭，跳过');
+                return null;
+            }
+            // 执行截图
+            await this.page.screenshot({ path: filepath, fullPage: true });
+            this.logger.info(`[错误截图] 截图已保存: ${filepath}`);
+
+            // 将截图路径附加到错误对象中
+            if (this.state.error) {
+                this.state.error.screenshotPath = filepath;
+            }
+
+            return filepath;
+        } catch (error) {
+            this.logger.error(`[错误截图] 截图失败: ${error.message}`);
+            return null;
+        }
+    }
+
 }
 
 module.exports = BaseCrawler;

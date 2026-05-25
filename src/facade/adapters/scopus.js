@@ -5,9 +5,16 @@ function createScopusCrawlerFacade() {
   const crawler = new ScopusCrawler();
   return {
     async start(keywords, options = {}) {
+      const taskId = options.taskId || `scopus_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const taskType = options.taskType || 'SCOPUS_SEARCH';
+      // 设置任务信息
+      crawler.taskId = taskId;
+      crawler.taskType = taskType;
+
       crawler.state.isRunning = true;
       crawler.state.progress = 0;
       crawler.state.error = null;
+
       try {
         await crawler.beforeCrawl();
         await crawler.initBrowser(options);
@@ -23,13 +30,14 @@ function createScopusCrawlerFacade() {
           ...saveResult
         };
 
-        crawler.state.progress = 100;
+
         return {
           ...saveResult,
           successList: extractedData.successList,
           failedList: extractedData.failedList
         };
       } catch (error) {
+        crawler.logger.error(`爬虫执行出错: ${error.message}`);
         // 记录错误但不清空 isRunning
         crawler.state.error = crawler.errorHandler.format(error, crawler.crawlerType);
         crawler.state.isRunning = false;

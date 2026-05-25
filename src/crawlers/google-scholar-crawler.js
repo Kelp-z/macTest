@@ -887,10 +887,10 @@ class GoogleScholarCrawler extends BaseCrawler {
         this.logger.info(`正在搜索: ${keyword}`);
 
         // // 导航到 Google Scholar
-        // await this.page.goto('https://scholar.google.com', {
-        //     timeout: 30000,
-        //     waitUntil: 'networkidle'
-        // });
+        await this.page.goto('https://scholar.google.com', {
+            timeout: 30000,
+            waitUntil: 'networkidle'
+        });
 
         // 检查验证码
         if (await isAnyCaptchaPresent(this.page)) {
