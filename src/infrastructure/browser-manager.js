@@ -516,6 +516,23 @@ class BrowserManager {
             extraBrowserArgs = []
         } = options;
 
+        // // 启动前强制清理残留进程，避免端口/连接冲突
+        // if (process.platform === 'win32') {
+        //     try {
+        //         const { execSync } = require('child_process');
+        //         execSync('taskkill /F /IM chrome.exe /T 2>nul', { stdio: 'ignore' });
+        //         execSync('taskkill /F /IM chromium.exe /T 2>nul', { stdio: 'ignore' });
+        //         console.log('[BrowserManager] 已清理残留浏览器进程');
+        //         // 等待进程完全退出和端口释放
+        //         await new Promise(r => setTimeout(r, 2000));
+        //     } catch (e) {
+        //         // 忽略错误（可能没有残留进程）
+        //     }
+        // }
+
+        // 只杀 Playwright 残留的浏览器，不碰用户正常打开的 Chrome
+        await this._killPlaywrightBrowsersOnly();
+
         let browserPath = executablePath;
         if (!browserPath) {
             browserPath = await this.ensureBrowser();
@@ -551,7 +568,47 @@ class BrowserManager {
 
         return browser;
     }
+    /**
+     * 强制终止所有 Playwright 相关的浏览器进程（仅 Windows）
+     * 该函数用于清理残留的浏览器进程，避免端口占用和资源泄漏。
+     * 执行成功后会等待 2 秒以确保端口完全释放。
+     */
+    async _killPlaywrightBrowsersOnly() {
+        if (process.platform !== 'win32') return;
 
+        const { execSync } = require('child_process');
+
+        try {
+            const psScript = `
+            Get-CimInstance Win32_Process | Where-Object { 
+                ($_.Name -match 'chrome|chromium') -and 
+                ($_.CommandLine -match 'remote-debugging-port=\\d+|playwright_chromiumdev_profile|playwright-artifacts')
+            } | ForEach-Object { 
+                try { 
+                    Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop;
+                    $_.ProcessId 
+                } catch { 
+                    $null 
+                }
+            } | Where-Object { $_ -ne $null }
+        `;
+
+            const result = execSync(
+                `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${psScript.replace(/\n/g, ' ').trim()}"`,
+                { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 15000 }
+            );
+
+            const pids = result.trim().split('\n').filter(Boolean);
+            if (pids.length > 0) {
+                console.log(`[BrowserManager] 已终止 ${pids.length} 个 Playwright 浏览器进程`);
+                await new Promise(r => setTimeout(r, 2000)); // 等待端口完全释放
+            } else {
+                console.log('[BrowserManager] 未发现残留 Playwright 浏览器进程');
+            }
+        } catch (e) {
+            // PowerShell 执行失败，静默忽略
+        }
+    }
     /**
      * 创建新页面（修复 locale/timezoneId 透传）
      * @param {Object} browser - browser 实例

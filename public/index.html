@@ -2441,6 +2441,10 @@
                             statusTag.textContent = '已完成';
                             statusTag.className = 'tag tag-stopped';
                         }
+                        if (res.data.error){
+                            // debugger;
+                            console.log("爬虫异常"+res.data.error)
+                        }
                         // 构造完成/失败状态
                         const completedTask = {
                             id: taskId,
@@ -2451,7 +2455,7 @@
                             endDate: formatDateTimeForBackend(new Date()),
                             createDate: currentTask.createDate,
                             assocID: currentTask.assocID,
-                            failure: res.data.error ? (res.data.error.message || JSON.stringify(res.data.error)) : "",
+                            failure: res.data.error ? (res.data.error.detail || JSON.stringify(res.data.error)) : "",
                             retryCount: currentTask.retryCount || 0,
                             requestData: currentTask.requestData,
                             resultData: JSON.stringify(res.data.result),
@@ -3056,7 +3060,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 });
             }, function (error) {
                 // 连接失败或断开回调
-                addLog('error', 'STOMP连接断开: ' + (error || '未知原因'));
+                console.log('error', 'STOMP连接断开: ' + (error || '未知原因'));
+                addLog('error', 'STOMP连接断开:请检查网络连接！');
                 cleanupStompConnection();
                 // 指数退避重连
                 const delay = Math.min(2000 * Math.pow(2, reconnectAttempt), 30000);

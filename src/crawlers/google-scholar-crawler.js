@@ -226,7 +226,7 @@ class GoogleScholarCrawler extends BaseCrawler {
                 waitUntil: 'networkidle'
             });
         }catch (e){
-            throw new Error('访问谷歌学术失败')
+            throw e;
         }
         this.logger.info('Google Scholar 无需登录');
         return Promise.resolve();
