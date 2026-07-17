@@ -43,53 +43,62 @@ async function handleHumanCaptcha(page, context) {
 
     logger.warn('⚠️ 检测到人机验证，请手动完成');
 
-    const outputDir = getCurrentOutputDir();
-    const screenshotPath = await browserManager.takeScreenshot(
-        page,
-        'captcha',
-        path.join(outputDir, 'screenshots')
-    );
+    const run = async () => {
+        const outputDir = getCurrentOutputDir();
+        const screenshotPath = await browserManager.takeScreenshot(
+            page,
+            'captcha',
+            path.join(outputDir, 'screenshots')
+        );
 
-    const io = require('../infrastructure/socket-io-manager').getIo();
-    if (io) {
-        io.emit('user-intervention-required', {
-            type: 'captcha-manual',
-            source: 'google',
-            data: {
-                message: '请在弹出的浏览器窗口中完成人机验证',
-                instruction: '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
-                screenshotPath: screenshotPath ? `/screenshots/${path.basename(screenshotPath)}` : null,
-                timestamp: Date.now()
-            }
-        });
-        logger.info('已发送人机验证提醒到前端');
-    }
-
-    let waitTime = 0;
-    const maxWaitTime = 600000; // 10分钟
-    const checkInterval = 5000;
-
-    while (waitTime < maxWaitTime) {
-        if (shouldStopRef() || !isRunningRef()) {
-            throw new Error('用户停止任务');
+        const io = require('../infrastructure/socket-io-manager').getIo();
+        if (io) {
+            io.emit('user-intervention-required', {
+                type: 'captcha-manual',
+                source: 'google',
+                data: {
+                    message: '请在弹出的浏览器窗口中完成人机验证',
+                    instruction: '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
+                    screenshotPath: screenshotPath ? `/screenshots/${path.basename(screenshotPath)}` : null,
+                    timestamp: Date.now()
+                }
+            });
+            logger.info('已发送人机验证提醒到前端');
         }
-        await page.waitForTimeout(checkInterval);
-        waitTime += checkInterval;
 
-        if (!await isAnyCaptchaPresent(page)) {
-            try {
-                const searchResults = await page.$('#gs_res_ccl_mid');
-                if (searchResults) {
-                    logger.info('✅ 验证已完成');
+        let waitTime = 0;
+        const maxWaitTime = 600000; // 10分钟
+        const checkInterval = 5000;
+
+        while (waitTime < maxWaitTime) {
+            if (shouldStopRef() || !isRunningRef()) {
+                throw new Error('用户停止任务');
+            }
+            await page.waitForTimeout(checkInterval);
+            waitTime += checkInterval;
+
+            if (!await isAnyCaptchaPresent(page)) {
+                try {
+                    const searchResults = await page.$('#gs_res_ccl_mid');
+                    if (searchResults) {
+                        logger.info('✅ 验证已完成');
+                        return;
+                    }
+                } catch (error) {
+                    logger.info('✅ 页面已恢复正常');
                     return;
                 }
-            } catch (error) {
-                logger.info('✅ 页面已恢复正常');
-                return;
             }
         }
+        throw new Error('人机验证处理超时');
+    };
+
+    // 仅在人机验证时弹出浏览器，完成后重新最小化到后台
+    if (browserManager && typeof browserManager.withVisibleWindow === 'function') {
+        await browserManager.withVisibleWindow(page, run, context.browser || null);
+    } else {
+        await run();
     }
-    throw new Error('人机验证处理超时');
 }
 
 /**
@@ -98,40 +107,48 @@ async function handleHumanCaptcha(page, context) {
  * @param {Object} context - 上下文（logger, shouldStopRef, isRunningRef）
  */
 async function handleTraditionalCaptcha(page, context) {
-    const { logger, shouldStopRef, isRunningRef } = context;
+    const { logger, browserManager, shouldStopRef, isRunningRef } = context;
 
     logger.warn('⚠️ 检测到字符验证码，等待用户输入');
 
-    const io = require('../infrastructure/socket-io-manager').getIo();
-    if (io) {
-        io.emit('user-intervention-required', {
-            type: 'captcha-manual',
-            source: 'google',
-            data: {
-                message: '请在浏览器窗口中输入验证码',
-                instruction: '请手动输入验证码并提交，完成后爬虫将自动继续',
-                timestamp: Date.now()
+    const run = async () => {
+        const io = require('../infrastructure/socket-io-manager').getIo();
+        if (io) {
+            io.emit('user-intervention-required', {
+                type: 'captcha-manual',
+                source: 'google',
+                data: {
+                    message: '请在浏览器窗口中输入验证码',
+                    instruction: '请手动输入验证码并提交，完成后爬虫将自动继续',
+                    timestamp: Date.now()
+                }
+            });
+        }
+
+        let waitTime = 0;
+        const maxWaitTime = 600000;
+        const checkInterval = 5000;
+
+        while (waitTime < maxWaitTime) {
+            if (shouldStopRef() || !isRunningRef()) {
+                throw new Error('用户停止任务');
             }
-        });
-    }
+            await page.waitForTimeout(checkInterval);
+            waitTime += checkInterval;
 
-    let waitTime = 0;
-    const maxWaitTime = 600000;
-    const checkInterval = 5000;
-
-    while (waitTime < maxWaitTime) {
-        if (shouldStopRef() || !isRunningRef()) {
-            throw new Error('用户停止任务');
+            if (!await isAnyCaptchaPresent(page)) {
+                logger.info('✅ 字符验证码已解决');
+                return;
+            }
         }
-        await page.waitForTimeout(checkInterval);
-        waitTime += checkInterval;
+        throw new Error('字符验证码处理超时');
+    };
 
-        if (!await isAnyCaptchaPresent(page)) {
-            logger.info('✅ 字符验证码已解决');
-            return;
-        }
+    if (browserManager && typeof browserManager.withVisibleWindow === 'function') {
+        await browserManager.withVisibleWindow(page, run, context.browser || null);
+    } else {
+        await run();
     }
-    throw new Error('字符验证码处理超时');
 }
 
 /**

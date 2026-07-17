@@ -128,6 +128,42 @@ class ConfigManager {
     }
 
     /**
+     * 获取浏览器启动选项
+     * 默认：有头但最小化后台运行，仅在人机验证/登录干预时恢复窗口
+     * @returns {Object}
+     */
+    getBrowserOptions() {
+        const browser = this.config.browser || {};
+        return {
+            headless: browser.headless === true,
+            // 默认后台最小化，避免检索时弹出窗口打断用户
+            startMinimized: browser.startMinimized !== false,
+            // minimized: 任务栏最小化（默认）；offscreen: 屏外窗口
+            hideMode: browser.hideMode === 'offscreen' ? 'offscreen' : 'minimized',
+            // 仅在人机验证 / 登录 / 注册时再弹出浏览器
+            showOnIntervention: browser.showOnIntervention !== false,
+            // 任务结束后保持浏览器最小化不关闭，下一任务直接复用（避免反复开关闪烁）
+            keepAlive: browser.keepAlive !== false,
+            // 以下两项会显著增加 Google 风控，默认关闭
+            disableSecurityArgs: browser.disableSecurityArgs === true,
+            deterministicRendering: browser.deterministicRendering === true,
+            ...(Array.isArray(browser.args) ? { args: browser.args } : {}),
+            ...(browser.executablePath ? { executablePath: browser.executablePath } : {}),
+            ...(browser.userDataDir ? { userDataDir: browser.userDataDir } : {}),
+            ...(typeof browser.remoteDebuggingPort === 'number'
+                ? { remoteDebuggingPort: browser.remoteDebuggingPort }
+                : {})
+        };
+    }
+
+    /**
+     * @deprecated 请使用 getBrowserOptions()
+     */
+    get browserOptions() {
+        return this.getBrowserOptions();
+    }
+
+    /**
      * 获取配置值（支持点号路径）
      * @param {string} path - 配置路径，如 'googleScholar.PRECISE_SEARCH_ENABLED'
      * @param {*} defaultValue - 默认值
@@ -155,6 +191,38 @@ class ConfigManager {
     }
 
     /**
+     * 深度合并并写回某个爬虫的配置片段（如保存 WoS 作者账密）
+     * @param {string} crawlerType
+     * @param {Object} partial
+     */
+    updateCrawlerConfig(crawlerType, partial = {}) {
+        const configKeyMap = {
+            'google': 'googleScholar',
+            'google-author': 'googleScholarAuthor',
+            'scopus': 'scopus',
+            'scopus-author': 'scopusAuthor',
+            'wos': 'wos',
+            'wos-author': 'wosAuthor'
+        };
+        const key = configKeyMap[crawlerType] || crawlerType;
+        if (!this.config || typeof this.config !== 'object') {
+            this.config = {};
+        }
+        const prev = this.config[key] && typeof this.config[key] === 'object' ? this.config[key] : {};
+        const next = { ...prev, ...partial };
+        // credentials 做浅合并，避免整段被空对象覆盖丢字段
+        if (partial.credentials && typeof partial.credentials === 'object') {
+            next.credentials = {
+                ...(prev.credentials || {}),
+                ...partial.credentials
+            };
+        }
+        this.config[key] = next;
+        this.save(this.config);
+        return next;
+    }
+
+    /**
      * 保存配置
      * @param {Object} newConfig - 新配置
      */
@@ -162,7 +230,7 @@ class ConfigManager {
         try {
             fs.writeFileSync(this.configPath, JSON.stringify(newConfig, null, 2), 'utf8');
             this.config = newConfig;
-            console.log('配置已保存');
+            console.log('配置已保存:', this.configPath);
         } catch (error) {
             console.error(`保存配置失败: ${error.message}`);
             throw error;

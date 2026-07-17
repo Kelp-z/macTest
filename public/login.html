@@ -487,6 +487,8 @@
             if (res.code === 200) {
                 saveRememberMe();
                 if (res.token) localStorage.setItem('token', res.token);
+                // 供爬虫按 App 用户隔离 WoS 等第三方账密
+                localStorage.setItem('username', username);
                 const urlParams = new URLSearchParams(window.location.search);
                 let redirect = urlParams.get('redirect');
                 if (!redirect || redirect === '/index') redirect = '/index';

@@ -52,6 +52,7 @@ class BaseCrawler {
         this.state.error = null;
         // 提取参数
         const { keywords, options = {} } = params;
+        this.crawlOptions = options;
 
         // 生成任务信息（如果外部已提供则使用外部的）
         const { taskId, taskType } = this._generateTaskInfo(options);
@@ -95,11 +96,13 @@ class BaseCrawler {
             await this.takeErrorScreenshot();
             throw this.state.error;
         }finally {
-            // 移除浏览器关闭监听器
-            this.browserManager.removeBrowserCloseListener(this.browser);
             // 清理会话
             this.interventionSession.cancelSource(this.crawlerType, '爬虫执行结束');
-            await this.cleanup();
+            // keepAlive 时仅缩回后台，不关闭浏览器；停止/重置时再强制关闭
+            try {
+                this.browserManager.removeBrowserCloseListener(this.browser);
+            } catch (e) {}
+            await this.cleanup({ force: false });
             this.state.isRunning = false;
         }
     }
@@ -117,45 +120,100 @@ class BaseCrawler {
         this.logger.info('爬虫执行完成')
     }
 
-    async initBrowser(){
-        this.browser = await this.browserManager.launch(this.configManager.browserOptions);
-        const {page,context} = await this.browserManager.createPage(this.browser);
-        this.page = page;
-        this.context = context;
-        //  设置浏览器关闭监听器
+    /**
+     * 是否常驻复用浏览器（默认 true）
+     */
+    _shouldKeepBrowserAlive() {
+        try {
+            return this.configManager.getBrowserOptions().keepAlive !== false;
+        } catch (e) {
+            return true;
+        }
+    }
+
+    /**
+     * 当前浏览器实例是否仍可用
+     */
+    _isBrowserAlive() {
+        try {
+            if (!this.browser || !this.page) return false;
+            if (typeof this.page.isClosed === 'function' && this.page.isClosed()) return false;
+            if (typeof this.browser.isConnected === 'function' && !this.browser.isConnected()) return false;
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    _setupBrowserCloseListener() {
+        if (!this.browser) return;
+        this.browserManager.removeBrowserCloseListener(this.browser);
         this.browserManager.setupBrowserCloseListener(this.browser, (closeInfo) => {
             this.logger.error(`浏览器异常关闭: ${closeInfo.message}`);
-
-
-            // 设置错误状态
             if (!this.state.error) {
                 this.state.error = this.errorHandler.format(
                     new Error(closeInfo.message),
                     this.crawlerType
                 );
             }
-            // 只标记停止，不调用 this.stop()
-            // this.stop() 会调 cleanup() 导致 browser.close()，但浏览器已经断了
             this.state.isRunning = false;
-
-            // 取消干预会话
             if (this.interventionSession) {
                 this.interventionSession.cancelSource(this.crawlerType, '浏览器异常关闭');
             }
-
-
             this.page = null;
             this.context = null;
             this.browser = null;
         });
     }
 
-    async cleanup(){
+    async initBrowser(){
+        // 复用已最小化的浏览器，避免每任务开关闪烁
+        if (this._isBrowserAlive()) {
+            this.logger.info('复用常驻浏览器（保持最小化）');
+            await this.browserManager.hideWindow(this.page, this.browser);
+            this._setupBrowserCloseListener();
+            return;
+        }
+
+        this.browser = await this.browserManager.launch(this.configManager.getBrowserOptions());
+        const {page,context} = await this.browserManager.createPage(this.browser);
+        this.page = page;
+        this.context = context;
+        // 默认最小化到后台，避免检索时弹出窗口打断用户
+        await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        this._setupBrowserCloseListener();
+    }
+
+    /**
+     * 清理浏览器
+     * @param {{force?: boolean}} options - force=true 时强制关闭（停止/重置/退出）
+     */
+    async cleanup(options = {}){
+        const force = options.force === true;
         if (!this.browser) return;
+
+        // 先尽量缩回后台
+        try {
+            if (this.page && !this.page.isClosed()) {
+                await this.browserManager.hideWindow(this.page, this.browser);
+            }
+        } catch (e) {
+            // 忽略
+        }
+
+        if (this._shouldKeepBrowserAlive() && !force) {
+            this.logger.info('keepAlive：浏览器保持最小化，供下一任务复用');
+            try {
+                this.browserManager.removeBrowserCloseListener(this.browser);
+            } catch (e) {}
+            return;
+        }
 
         try {
             // 检查浏览器是否还连着
             if (this.browser.isConnected && this.browser.isConnected()) {
+                await this.browserManager.close(this.browser);
+            } else if (this.browser._persistentContext) {
                 await this.browserManager.close(this.browser);
             } else {
                 this.logger.info('浏览器已断开，跳过关闭');
@@ -200,17 +258,8 @@ class BaseCrawler {
         if (this.interventionSession) {
             this.interventionSession.cancelSource(this.crawlerType, '用户停止爬虫');
         }
-        // 强制关闭页面，中断任何正在进行的等待
-        if (this.page && !this.page.isClosed()) {
-            try {
-                await this.page.close();
-                this.logger.info('已主动关闭页面，中断等待操作');
-            } catch (err) {
-                this.logger.warn(`关闭页面时出错: ${err.message}`);
-            }
-        }
-        // 清理浏览器资源
-        await this.cleanup();
+        // 停止时强制关闭常驻浏览器（勿先单独关 page，以免残留无页的 context）
+        await this.cleanup({ force: true });
 
         this.logger.info('爬虫已停止');
     }
@@ -224,6 +273,11 @@ class BaseCrawler {
         if (this.interventionSession) {
             this.interventionSession.cancelSource(this.crawlerType, '状态重置');
         }
+
+        // 异步强制关闭常驻浏览器（reset 接口多为同步调用）
+        Promise.resolve(this.cleanup({ force: true })).catch((err) => {
+            this.logger.warn(`重置时关闭浏览器失败: ${err.message}`);
+        });
 
         // 重置基础状态
         this.state = {
@@ -310,6 +364,24 @@ class BaseCrawler {
      * @param {Object} data - 干预数据
      * @returns {Promise<void>}
      */
+    /**
+     * 需要在浏览器中操作时临时显示窗口（人机验证 / 登录 / 手动干预）
+     */
+    async _showBrowserForIntervention() {
+        if (this.page && this.browserManager) {
+            await this.browserManager.showWindow(this.page, this.browser);
+        }
+    }
+
+    /**
+     * 干预结束后将浏览器重新最小化到后台
+     */
+    async _hideBrowserAfterIntervention() {
+        if (this.page && this.browserManager) {
+            await this.browserManager.hideWindow(this.page, this.browser);
+        }
+    }
+
     async requestIntervention(type, data = {}) {
         const io = require('../infrastructure/socket-io-manager').getIo();
 
@@ -319,11 +391,11 @@ class BaseCrawler {
         }
 
         if (type === 'captcha') {
-            // 使用 intervention-session 管理验证码
+            // 图片验证码：Electron 输入 + 同时弹出浏览器便于手动登录
+            await this._showBrowserForIntervention();
             const captchaId = Date.now().toString();
             const promise = this.interventionSession.createCaptchaPromise(this.crawlerType, captchaId);
 
-            // 发送事件到前端
             io.emit('user-intervention-required', {
                 id: captchaId,
                 type: 'captcha',
@@ -331,25 +403,31 @@ class BaseCrawler {
                 data
             });
 
-            // 等待用户输入
-            const captchaCode = await promise;
-            this.logger.info(`用户已输入验证码: ${captchaCode}`);
-            return captchaCode;
+            try {
+                const captchaCode = await promise;
+                this.logger.info(`用户已输入验证码: ${captchaCode}`);
+                return captchaCode;
+            } finally {
+                // 登录流程若还需继续验证，由上层决定是否再次 show；此处不强制 hide
+            }
 
         } else if (type === 'manual') {
-            // 使用 intervention-session 管理手动操作
-            const promise = this.interventionSession.createManualPromise(this.crawlerType);
+            // 手动操作需在浏览器中完成，临时弹出窗口
+            await this._showBrowserForIntervention();
+            try {
+                const promise = this.interventionSession.createManualPromise(this.crawlerType);
 
-            // 发送事件到前端
-            io.emit('user-intervention-required', {
-                type: 'manual',
-                source: this.crawlerType,
-                data
-            });
+                io.emit('user-intervention-required', {
+                    type: 'manual',
+                    source: this.crawlerType,
+                    data
+                });
 
-            // 等待用户确认
-            await promise;
-            this.logger.info('用户已确认手动操作完成');
+                await promise;
+                this.logger.info('用户已确认手动操作完成');
+            } finally {
+                await this._hideBrowserAfterIntervention();
+            }
 
         } else {
             throw new Error(`不支持的干预类型: ${type}`);

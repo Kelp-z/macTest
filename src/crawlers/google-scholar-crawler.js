@@ -18,9 +18,18 @@ class GoogleScholarCrawler extends BaseCrawler {
         this.searchConfig = {
             PRECISE_SEARCH_ENABLED: crawlerConfig.PRECISE_SEARCH_ENABLED ?? true,
             TITLE_SIMILARITY_THRESHOLD: crawlerConfig.TITLE_SIMILARITY_THRESHOLD ?? 0.8,
+            // 精确匹配时优先采用 Google 排名第 1 的结果（与手动搜索一致）
+            PREFER_FIRST_RESULT: crawlerConfig.PREFER_FIRST_RESULT !== false,
+            // 搜索时对标题加引号做短语检索
+            QUOTED_TITLE_SEARCH: crawlerConfig.QUOTED_TITLE_SEARCH !== false,
+            // 先用请求原文（完整 title/authors）判断第 1 条是否匹配，避免坏关键词误选后面结果
+            MATCH_REQUEST_FIRST: crawlerConfig.MATCH_REQUEST_FIRST !== false,
             VISIT_CITATION_ENABLED: crawlerConfig.VISIT_CITATION_ENABLED ?? true,
             MAX_CITATION_PAGES: crawlerConfig.MAX_CITATION_PAGES ?? 2,
-            OUTPUT_BASE_DIR_NAME: crawlerConfig.OUTPUT_BASE_DIR_NAME ?? 'output/google'
+            OUTPUT_BASE_DIR_NAME: crawlerConfig.OUTPUT_BASE_DIR_NAME ?? 'output/google',
+            PERSIST_PROFILE: crawlerConfig.PERSIST_PROFILE !== false,
+            SEARCH_DELAY_MIN_MS: crawlerConfig.SEARCH_DELAY_MIN_MS ?? 5000,
+            SEARCH_DELAY_MAX_MS: crawlerConfig.SEARCH_DELAY_MAX_MS ?? 12000
         };
 
         // 内部状态
@@ -116,20 +125,48 @@ class GoogleScholarCrawler extends BaseCrawler {
      * 初始化浏览器（重写父类方法）
      */
     async initBrowser() {
-        this.browser = await this.browserManager.launch(this.configManager.browserOptions);
-
         // 确保 EndNote 下载目录存在
         const endNoteDir = path.join(this.currentOutputDir, 'endnote_downloads');
         if (!fs.existsSync(endNoteDir)) {
             fs.mkdirSync(endNoteDir, {recursive: true});
         }
 
-        // 创建带下载路径的页面
-        const {page, context} = await this.browserManager.createPage(this.browser, {
-            downloadsPath: endNoteDir
-        });
-        this.page = page;
-        this.context = context;
+        // 复用常驻浏览器，避免每开任务闪一下再缩小
+        if (this._isBrowserAlive()) {
+            this.logger.info('复用 Google Scholar 常驻浏览器（保持最小化）');
+            await this.browserManager.hideWindow(this.page, this.browser);
+            this._setupBrowserCloseListener();
+            return;
+        }
+
+        const browserOptions = this.configManager.getBrowserOptions();
+
+        if (this.searchConfig.PERSIST_PROFILE) {
+            const profileDir = this.browserManager.getPersistentUserDataDir('google-scholar');
+            // 下载目录固定到 profile 下，任务内再拷贝到 currentOutputDir
+            const stickyDownloadDir = path.join(profileDir, 'downloads');
+            if (!fs.existsSync(stickyDownloadDir)) {
+                fs.mkdirSync(stickyDownloadDir, { recursive: true });
+            }
+            const { browser, context, page } = await this.browserManager.launchPersistent(profileDir, {
+                ...browserOptions,
+                downloadsPath: stickyDownloadDir
+            });
+            this.browser = browser;
+            this.context = context;
+            this.page = page;
+            this.logger.info(`已启用 Google Scholar 持久化配置: ${profileDir}`);
+        } else {
+            this.browser = await this.browserManager.launch(browserOptions);
+            const {page, context} = await this.browserManager.createPage(this.browser, {
+                downloadsPath: endNoteDir
+            });
+            this.page = page;
+            this.context = context;
+        }
+
+        await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        this._setupBrowserCloseListener();
 
         this.logger.info(`浏览器已初始化，EndNote 下载目录: ${endNoteDir}`);
     }
@@ -220,11 +257,14 @@ class GoogleScholarCrawler extends BaseCrawler {
      */
     async login() {
         try {
-            // 导航到 Google Scholar
             await this.page.goto('https://scholar.google.com', {
                 timeout: 30000,
-                waitUntil: 'networkidle'
+                waitUntil: 'domcontentloaded'
             });
+            await this._randomDelay(1500, 3500);
+            if (await isAnyCaptchaPresent(this.page)) {
+                await handleAnyCaptcha(this.page, this._getCaptchaContext());
+            }
         }catch (e){
             throw e;
         }
@@ -280,7 +320,8 @@ class GoogleScholarCrawler extends BaseCrawler {
             );
 
             try {
-                const result = await this._searchSingleKeyword(keyword, options);
+                const requestPaper = originalPapers[i] || { title: keyword };
+                const result = await this._searchSingleKeyword(keyword, options, requestPaper);
                 results.push(result);
             } catch (error) {
                 if (error.message === '遭遇谷歌反脚本检测，检索中断') {
@@ -297,8 +338,11 @@ class GoogleScholarCrawler extends BaseCrawler {
 
             }
 
-            // 随机延迟，避免被封
-            await this._randomDelay(2000, 4000);
+            // 随机延迟，降低 Google 人机验证频率
+            await this._randomDelay(
+                this.searchConfig.SEARCH_DELAY_MIN_MS,
+                this.searchConfig.SEARCH_DELAY_MAX_MS
+            );
         }
         // 如果需要访问引用链接
         if (this.shouldVisitCitations && this.successPaperList.length > 0) {
@@ -881,16 +925,42 @@ class GoogleScholarCrawler extends BaseCrawler {
     }
 
     /**
-     * 搜索单个关键词
+     * 构造更接近手动搜索的查询串（默认对标题加引号做短语检索）
      */
-    async _searchSingleKeyword(keyword, options) {
-        this.logger.info(`正在搜索: ${keyword}`);
+    _buildSearchQuery(keyword) {
+        const text = String(keyword || '').trim();
+        if (!text) return text;
+        if (!this.searchConfig.QUOTED_TITLE_SEARCH) return text;
+        // 已是引号包裹则不再重复加
+        if ((text.startsWith('"') && text.endsWith('"')) ||
+            (text.startsWith('“') && text.endsWith('”'))) {
+            return text;
+        }
+        // 去掉内部双引号，避免破坏短语语法
+        const escaped = text.replace(/"/g, '');
+        return `"${escaped}"`;
+    }
 
-        // // 导航到 Google Scholar
-        await this.page.goto('https://scholar.google.com', {
-            timeout: 30000,
-            waitUntil: 'networkidle'
-        });
+    /**
+     * 搜索单个关键词
+     * @param {string} keyword - 搜索用关键词（可能被切割，仅用于构造查询）
+     * @param {Object} options
+     * @param {Object} [requestPaper] - 原始请求数据（完整 title/authors，用于匹配裁判）
+     */
+    async _searchSingleKeyword(keyword, options, requestPaper = null) {
+        const searchQuery = this._buildSearchQuery(keyword);
+        this.logger.info(`正在搜索: ${searchQuery}`);
+
+        // 已在 Scholar 上时复用页面，减少重复导航触发风控
+        const currentUrl = this.page.url();
+        const alreadyOnScholar = currentUrl.includes('scholar.google.');
+        if (!alreadyOnScholar) {
+            await this.page.goto('https://scholar.google.com', {
+                timeout: 30000,
+                waitUntil: 'domcontentloaded'
+            });
+            await this._randomDelay(1500, 3000);
+        }
 
         // 检查验证码
         if (await isAnyCaptchaPresent(this.page)) {
@@ -898,19 +968,19 @@ class GoogleScholarCrawler extends BaseCrawler {
         }
 
         // 输入关键词
-        const searchInput = this.page.locator('input[name="q"]');
+        const searchInput = this.page.locator('input[name="q"]').first();
         await searchInput.waitFor({state: 'visible', timeout: 10000});
-        await humanType(this.page, searchInput, keyword);
+        await humanType(this.page, searchInput, searchQuery);
 
-        await this._randomDelay(800, 2000);
+        await this._randomDelay(1000, 2500);
 
         // 提交搜索
         await this.page.keyboard.press('Enter');
-        await this.page.waitForLoadState('networkidle');
-        await this._randomDelay();
+        await this.page.waitForLoadState('domcontentloaded');
+        await this._randomDelay(2000, 4000);
 
-        // 提取搜索结果
-        const extractedData = await this._extractSearchResults(keyword);
+        // 匹配裁判优先用请求原文；关键词仅作查询与兜底
+        const extractedData = await this._extractSearchResults(keyword, requestPaper);
 
         return {
             keyword,
@@ -921,8 +991,10 @@ class GoogleScholarCrawler extends BaseCrawler {
 
     /**
      * 提取搜索结果
+     * @param {string} keyword
+     * @param {Object} [requestPaper]
      */
-    async _extractSearchResults(keyword) {
+    async _extractSearchResults(keyword, requestPaper = null) {
         try {
 
             const antiBotCheck = await checkGoogleAntiBot(this.page, this.logger);
@@ -937,7 +1009,7 @@ class GoogleScholarCrawler extends BaseCrawler {
 
             if (resultCount === 0) {
                 this.logger.warn(`未找到任何结果: ${keyword}`);
-                this._recordFailedPaper(keyword, '未找到搜索结果');
+                this._recordFailedPaper(requestPaper || keyword, '未找到搜索结果');
                 return {success: false, data: null};
             }
 
@@ -945,71 +1017,143 @@ class GoogleScholarCrawler extends BaseCrawler {
 
             // 根据配置选择精确搜索或泛化搜索
             if (this.searchConfig.PRECISE_SEARCH_ENABLED) {
-                return await this._handlePreciseSearch(searchResults, resultCount, keyword);
+                return await this._handlePreciseSearch(searchResults, resultCount, keyword, requestPaper);
             } else {
                 return await this._handleGeneralSearch(searchResults, resultCount, keyword);
             }
         } catch (error) {
             this.logger.error(`提取搜索结果失败: ${error.message}`);
-            this._recordFailedPaper(keyword, `提取结果出错: ${error.message}`);
+            this._recordFailedPaper(requestPaper || keyword, `提取结果出错: ${error.message}`);
             return {success: false, data: null};
         }
     }
 
     /**
-     * 精确搜索模式
+     * 精确搜索模式：
+     * 1) 先用「请求原文 title/authors」判断 Google 第 1 条是否匹配（避免坏关键词误选后面结果）
+     * 2) 第 1 条不匹配时，再退回关键词相似度在前几条中优选
      */
-    async _handlePreciseSearch(searchResults, resultCount, keyword) {
-        let bestMatch = null;
-        let bestSimilarity = 0;
-
+    async _handlePreciseSearch(searchResults, resultCount, keyword, requestPaper = null) {
         const maxCheck = Math.min(resultCount, 5);
+        const threshold = this.searchConfig.TITLE_SIMILARITY_THRESHOLD;
+        const requestRef = requestPaper || { title: keyword, authors: '' };
+        const requestTitle = (requestRef.title || requestRef.keyword || keyword || '').trim();
+        const requestAuthors = (requestRef.authors || '').trim();
+
+        const candidates = [];
 
         for (let i = 0; i < maxCheck; i++) {
             const result = searchResults.nth(i);
-
             try {
                 const title = await this._extractTitle(result);
                 const authors = await this._extractAuthors(result);
-
-                // 计算相似度
-                const similarity = this._calculateSimilarity(keyword, title, authors);
-
-                if (similarity > bestSimilarity) {
-                    bestSimilarity = similarity;
-                    bestMatch = await this._extractCompleteResult(result, keyword, similarity >= this.searchConfig.TITLE_SIMILARITY_THRESHOLD);
-                    // 如果配置了下载 EndNote，则执行下载
-                    if (this.searchConfig.VISIT_CITATION_ENABLED) {
-                        let paperInfo = await this._extractCompleteResult(result, keyword, similarity >= this.searchConfig.TITLE_SIMILARITY_THRESHOLD);
-
-                        // 如果配置了下载 EndNote，则执行下载
-                        this.logger.info(`正在下载 EndNote 文件...`);
-                        const downloadResult = await this._extractAndDownloadEndNoteFile(result);
-
-                        if (downloadResult.parsedEndNote) {
-                            paperInfo = this._updatePaperWithEndNote(
-                                paperInfo,
-                                downloadResult.parsedEndNote,
-                                downloadResult.downloadedFilePath,
-                                downloadResult.endNoteLink
-                            );
-                        }
-
-                        bestMatch = paperInfo;
-                    }
-                }
+                const requestSimilarity = this._matchAgainstRequest(requestTitle, requestAuthors, title, authors);
+                const keywordSimilarity = this._calculateSimilarity(keyword, title, authors);
+                candidates.push({
+                    index: i,
+                    result,
+                    title,
+                    authors,
+                    requestSimilarity,
+                    keywordSimilarity,
+                    // 兼容旧字段名
+                    similarity: keywordSimilarity
+                });
+                this.logger.info(
+                    `候选 #${i + 1} 请求匹配=${requestSimilarity.toFixed(3)} ` +
+                    `关键词匹配=${keywordSimilarity.toFixed(3)} 标题=${title}`
+                );
             } catch (error) {
                 this.logger.warn(`检查结果 ${i + 1} 失败: ${error.message}`);
             }
         }
 
-        if (bestMatch) {
-            this.successPaperList.push(bestMatch);
-            return {success: true, data: bestMatch};
-        } else {
-            this._recordFailedPaper(keyword, '精确搜索未找到匹配结果');
+        if (candidates.length === 0) {
+            this._recordFailedPaper(requestRef, '精确搜索未找到匹配结果');
             return {success: false, data: null};
         }
+
+        let chosen = candidates[0];
+        let chosenBy = 'first';
+
+        // 阶段①：请求原文 vs 第 1 条 —— 达标则直接采用，不再被坏关键词抢走
+        if (this.searchConfig.MATCH_REQUEST_FIRST !== false &&
+            candidates[0].requestSimilarity >= threshold) {
+            chosen = candidates[0];
+            chosenBy = 'request-first';
+            this.logger.info(
+                `第 1 条与请求数据匹配（${candidates[0].requestSimilarity.toFixed(3)} ≥ ${threshold}），直接采用，跳过关键词优选`
+            );
+        } else {
+            // 阶段②：退回关键词相似度逻辑
+            if (this.searchConfig.MATCH_REQUEST_FIRST !== false) {
+                this.logger.info(
+                    `第 1 条与请求数据不够匹配（${candidates[0].requestSimilarity.toFixed(3)} < ${threshold}），` +
+                    `改用关键词相似度优选`
+                );
+            }
+
+            const bestByKeyword = candidates.reduce(
+                (a, b) => (b.keywordSimilarity > a.keywordSimilarity ? b : a),
+                candidates[0]
+            );
+
+            if (this.searchConfig.PREFER_FIRST_RESULT) {
+                chosen = candidates[0];
+                if (chosen.keywordSimilarity >= threshold ||
+                    chosen.keywordSimilarity >= bestByKeyword.keywordSimilarity - 0.08) {
+                    chosenBy = 'keyword-prefer-first';
+                    if (chosen.index !== bestByKeyword.index) {
+                        this.logger.info(
+                            `关键词模式下保留第 1 条（${chosen.keywordSimilarity.toFixed(3)}），` +
+                            `未改用第 ${bestByKeyword.index + 1} 条（${bestByKeyword.keywordSimilarity.toFixed(3)}）`
+                        );
+                    }
+                } else {
+                    chosen = bestByKeyword;
+                    chosenBy = 'keyword-best';
+                    this.logger.info(
+                        `关键词模式下第 1 条偏低（${candidates[0].keywordSimilarity.toFixed(3)}），` +
+                        `改用第 ${chosen.index + 1} 条（${chosen.keywordSimilarity.toFixed(3)}）`
+                    );
+                }
+            } else {
+                chosen = bestByKeyword;
+                chosenBy = 'keyword-best';
+            }
+        }
+
+        // 是否“匹配”以请求原文相似度为准（比关键词更可靠）
+        const finalRequestScore = chosen.requestSimilarity != null
+            ? chosen.requestSimilarity
+            : this._matchAgainstRequest(requestTitle, requestAuthors, chosen.title, chosen.authors);
+        const isMatch = finalRequestScore >= threshold || chosen.keywordSimilarity >= threshold;
+
+        this.logger.info(
+            `最终选用 #${chosen.index + 1}（策略=${chosenBy}，请求匹配=${finalRequestScore.toFixed(3)}）`
+        );
+
+        let bestMatch = await this._extractCompleteResult(
+            chosen.result,
+            requestTitle || keyword,
+            isMatch
+        );
+
+        if (this.searchConfig.VISIT_CITATION_ENABLED) {
+            this.logger.info(`正在下载 EndNote 文件（结果 #${chosen.index + 1}）...`);
+            const downloadResult = await this._extractAndDownloadEndNoteFile(chosen.result);
+            if (downloadResult.parsedEndNote) {
+                bestMatch = this._updatePaperWithEndNote(
+                    bestMatch,
+                    downloadResult.parsedEndNote,
+                    downloadResult.downloadedFilePath,
+                    downloadResult.endNoteLink
+                );
+            }
+        }
+
+        this.successPaperList.push(bestMatch);
+        return {success: true, data: bestMatch};
     }
 
     /**
@@ -1429,15 +1573,6 @@ class GoogleScholarCrawler extends BaseCrawler {
         this.logger.info(`爬取完成，成功: ${this.successPaperList.length}，失败: ${this.failedPaperList.length}`);
     }
 
-    /**
-     * 停止爬虫
-     */
-    async stop() {
-        this.logger.info('收到停止信号');
-        this.shouldStop = true;
-        await super.stop();
-    }
-
     //  辅助方法
 
 
@@ -1656,29 +1791,95 @@ class GoogleScholarCrawler extends BaseCrawler {
     }
 
     /**
-     * 计算相似度（简化版）
+     * 归一化标题文本，便于相似度比较
+     */
+    _normalizeTitleText(text) {
+        return String(text || '')
+            .toLowerCase()
+            .replace(/\u2026/g, ' ')          // …
+            .replace(/\.{2,}/g, ' ')          // ...
+            .replace(/\[(pdf|html|citation)\]/gi, ' ')
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ') // 去掉标点，保留字母数字
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    /**
+     * 用请求原文（完整 title + authors）与搜索结果比对，避免坏关键词误判
+     */
+    _matchAgainstRequest(requestTitle, requestAuthors, resultTitle, resultAuthors) {
+        const titleScore = this._calculateSimilarity(requestTitle, resultTitle, resultAuthors);
+        if (!requestAuthors || !resultAuthors) {
+            return titleScore;
+        }
+        const authorScore = this._calculateAuthorOverlap(requestAuthors, resultAuthors);
+        // 标题已较好且作者有重叠时略微加分；标题很低时不靠作者硬抬
+        if (titleScore >= 0.55 && authorScore >= 0.25) {
+            return Math.min(1, titleScore + 0.12 * authorScore);
+        }
+        return titleScore;
+    }
+
+    /**
+     * 作者字段粗略重叠度（分号/逗号分隔的姓氏或完整片段）
+     */
+    _calculateAuthorOverlap(requestAuthors, resultAuthors) {
+        const splitAuthors = (text) => String(text || '')
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}\s,;.&-]/gu, ' ')
+            .split(/[,;&]+|\band\b/i)
+            .map(s => s.trim())
+            .filter(s => s.length > 1);
+
+        const reqParts = splitAuthors(requestAuthors);
+        const resNorm = this._normalizeTitleText(resultAuthors);
+        if (reqParts.length === 0 || !resNorm) return 0;
+
+        let hit = 0;
+        for (const part of reqParts) {
+            const tokens = part.split(/\s+/).filter(t => t.length > 1);
+            // 取姓氏倾向：最后一段，或整段
+            const key = tokens.length ? tokens[tokens.length - 1] : part;
+            if (key && resNorm.includes(key)) hit++;
+        }
+        return hit / reqParts.length;
+    }
+
+    /**
+     * 计算标题相似度（归一化后的词重叠 + 前缀/包含关系）
      */
     _calculateSimilarity(keyword, title, authors) {
-        // 简化的相似度计算
-        const keywordLower = keyword.toLowerCase();
-        const titleLower = title.toLowerCase();
+        const keywordNorm = this._normalizeTitleText(keyword);
+        const titleNorm = this._normalizeTitleText(title);
 
-        if (titleLower.includes(keywordLower)) {
+        if (!keywordNorm || !titleNorm) return 0;
+
+        // 完全包含 / 前缀匹配（Scholar 常截断标题）
+        if (titleNorm === keywordNorm ||
+            titleNorm.includes(keywordNorm) ||
+            keywordNorm.includes(titleNorm)) {
             return 1.0;
         }
 
-        // 简单的词重叠计算
-        const keywordWords = keywordLower.split(/\s+/);
-        const titleWords = titleLower.split(/\s+/);
+        const keywordWords = keywordNorm.split(' ').filter(w => w.length > 1);
+        const titleWords = new Set(titleNorm.split(' ').filter(w => w.length > 1));
+        if (keywordWords.length === 0) return 0;
 
         let matchCount = 0;
         for (const word of keywordWords) {
-            if (titleWords.includes(word)) {
+            if (titleWords.has(word)) {
                 matchCount++;
             }
         }
+        const overlap = matchCount / keywordWords.length;
 
-        return matchCount / keywordWords.length;
+        // Jaccard 作为补充，避免短标题偶然高分
+        const titleWordArr = [...titleWords];
+        const intersection = keywordWords.filter(w => titleWords.has(w)).length;
+        const union = new Set([...keywordWords, ...titleWordArr]).size || 1;
+        const jaccard = intersection / union;
+
+        return Math.max(overlap, jaccard);
     }
 
     /**
@@ -1738,6 +1939,7 @@ class GoogleScholarCrawler extends BaseCrawler {
         return {
             logger: this.logger,
             browserManager: this.browserManager,
+            browser: this.browser,
             getCurrentOutputDir: () => this.currentOutputDir,
             shouldStopRef: () => this.shouldStop,
             isRunningRef: () => this.state?.isRunning ?? true

@@ -94,6 +94,8 @@ function registerCrawlerRoutes({
             taskType,
             generateExcel: req.body.generateExcel,
             outputDir: req.body.outputDir,
+            // App 登录用户，用于按用户隔离第三方账密 / 浏览器会话
+            ...(req.body.spmUsername ? { spmUsername: String(req.body.spmUsername).trim() } : {}),
             ...(taskCaptchaDir ? { captchaDir: taskCaptchaDir } : {}),
             // 将定义在 callbacks 对象中的回调函数作为参数,动态地把对应的回调函数注册到任务参数中
             ...callbacks

@@ -80,7 +80,8 @@ class WosCrawler extends BaseCrawler {
         // 定义验证码回调
         const onCaptchaRequired = async (data) => {
             const { captchaId, imagePath } = data;
-            const taskId = imagePath.split(path.sep).slice(-2, -1)[0];
+            await this._showBrowserForIntervention();
+
             const fileName = path.basename(imagePath);
             const configManager = require('../infrastructure/config-manager');
             const localBaseUrl = configManager.getLocalBaseUrl();
@@ -99,7 +100,11 @@ class WosCrawler extends BaseCrawler {
                     id: captchaId,
                     type: 'captcha',
                     source: this.crawlerType,
-                    data: { imageUrl }
+                    data: {
+                        imageUrl,
+                        message: '请输入验证码，或在弹出的浏览器中手动登录学术猫',
+                        instruction: '可在本界面填写验证码；也可直接在浏览器窗口中完成登录。'
+                    }
                 });
             }
 
@@ -120,36 +125,45 @@ class WosCrawler extends BaseCrawler {
         // 定义手动模式回调
         const onManualModeRequired = async () => {
             this.logger.warn('需要手动干预,请在前端确认');
-            const promise = this.interventionSession.createManualPromise(this.crawlerType);
+            await this._showBrowserForIntervention();
+            try {
+                const promise = this.interventionSession.createManualPromise(this.crawlerType);
 
-            const io = require('../infrastructure/socket-io-manager').getIo();
-            if (io) {
-                io.emit('user-intervention-required', {
-                    type: 'manual',
-                    source: this.crawlerType,
-                    data: { message: '请在浏览器中完成操作,然后点击确认按钮' }
-                });
+                const io = require('../infrastructure/socket-io-manager').getIo();
+                if (io) {
+                    io.emit('user-intervention-required', {
+                        type: 'manual',
+                        source: this.crawlerType,
+                        data: { message: '请在浏览器中完成操作,然后点击确认按钮' }
+                    });
+                }
+
+                await promise;
+                this.logger.info('用户已确认手动操作完成');
+            } finally {
+                await this._hideBrowserAfterIntervention();
             }
-
-            await promise;
-            this.logger.info('用户已确认手动操作完成');
         };
         const captchaDir = getSafeProjectPath(this.searchConfig.CAPTCHA_DIR_NAME);
         // 使用学术猫登录
-        await academicCatLogin(
-            this.page,
-            {
-                BASE_URL: this.searchConfig.BASE_URL,
-                USER_NAME: this.credentials.userName,
-                PASSWORD: this.credentials.password,
-                // CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
-                CAPTCHA_DIR: captchaDir
-            },
-            onCaptchaRequired,
-            (msg) => this.logger.info(msg),
-            (msg) => this.state.waitingForCaptcha = msg,
-            () => this.shouldStop
-        );
+        try {
+            await academicCatLogin(
+                this.page,
+                {
+                    BASE_URL: this.searchConfig.BASE_URL,
+                    USER_NAME: this.credentials.userName,
+                    PASSWORD: this.credentials.password,
+                    // CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
+                    CAPTCHA_DIR: captchaDir
+                },
+                onCaptchaRequired,
+                (msg) => this.logger.info(msg),
+                (msg) => this.state.waitingForCaptcha = msg,
+                () => this.shouldStop
+            );
+        } finally {
+            await this._hideBrowserAfterIntervention();
+        }
 
         if (this.shouldStop) {
             throw new Error('用户停止登录');

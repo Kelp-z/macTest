@@ -79,10 +79,14 @@ class ScopusCrawler extends BaseCrawler {
         const onCaptchaRequired = async (data) => {
             const { captchaId, imagePath } = data;
 
+            // 验证码/登录时必须把浏览器从屏外拉回，方便核对或手动登录
+            await this._showBrowserForIntervention();
+
             // 转换为可访问的 URL
-            const taskId = imagePath.split(path.sep).slice(-2, -1)[0];
             const fileName = path.basename(imagePath);
-            const imageUrl = `http://localhost:3000/captcha/${fileName}`;
+            const configManager = require('../infrastructure/config-manager');
+            const localBaseUrl = configManager.getLocalBaseUrl();
+            const imageUrl = `${localBaseUrl}/captcha/${fileName}`;
 
             this.state.waitingForCaptcha = true;
             this.state.captchaId = captchaId;
@@ -99,12 +103,16 @@ class ScopusCrawler extends BaseCrawler {
                     id: captchaId,
                     type: 'captcha',
                     source: this.crawlerType,
-                    data: { imageUrl }
+                    data: {
+                        imageUrl,
+                        message: '请输入验证码，或在弹出的浏览器中手动登录学术猫',
+                        instruction: '可在本界面填写验证码；也可直接在浏览器窗口中完成登录。'
+                    }
                 });
             }
             try {
                 const captchaCode = await promise;
-                // 验证码输入完成，清除等待状态
+                // 验证码输入完成，清除等待状态（登录未成功时仍保持浏览器可见）
                 this.state.waitingForCaptcha = false;
                 this.state.captchaId = null;
                 this.state.captchaImagePath = null;
@@ -122,41 +130,47 @@ class ScopusCrawler extends BaseCrawler {
         //  定义手动模式回调
         const onManualModeRequired = async () => {
             this.logger.warn('需要手动干预，请在前端确认');
+            await this._showBrowserForIntervention();
+            try {
+                const promise = this.interventionSession.createManualPromise(this.crawlerType);
 
-            //  使用 intervention-session 创建等待 Promise
-            const promise = this.interventionSession.createManualPromise(this.crawlerType);
+                const io = require('../infrastructure/socket-io-manager').getIo();
+                if (io) {
+                    io.emit('user-intervention-required', {
+                        type: 'manual',
+                        source: this.crawlerType,
+                        data: { message: '请在浏览器中完成操作，然后点击确认按钮' }
+                    });
+                }
 
-            //  发送事件到前端
-            const io = require('../infrastructure/socket-io-manager').getIo();
-            if (io) {
-                io.emit('user-intervention-required', {
-                    type: 'manual',
-                    source: this.crawlerType,
-                    data: { message: '请在浏览器中完成操作，然后点击确认按钮' }
-                });
+                await promise;
+                this.logger.info('用户已确认手动操作完成');
+            } finally {
+                await this._hideBrowserAfterIntervention();
             }
-
-            //  等待用户确认
-            await promise;
-            this.logger.info('用户已确认手动操作完成');
         };
         const captchaDir = getSafeProjectPath(this.searchConfig.CAPTCHA_DIR_NAME);
 
         // 使用学术猫登录（支持验证码）
-        await academicCatLogin(
-            this.page,
-            {
-                BASE_URL: this.searchConfig.BASE_URL,
-                USER_NAME: this.credentials.userName,
-                PASSWORD: this.credentials.password,
-                // CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
-                CAPTCHA_DIR: captchaDir
-            },
-            onCaptchaRequired,
-            (msg) => this.logger.info(msg),
-            (msg)=>this.state.waitingForCaptcha = msg,
-            () => this.shouldStop
-        );
+        try {
+            await academicCatLogin(
+                this.page,
+                {
+                    BASE_URL: this.searchConfig.BASE_URL,
+                    USER_NAME: this.credentials.userName,
+                    PASSWORD: this.credentials.password,
+                    // CAPTCHA_DIR: path.join(process.cwd(), this.searchConfig.CAPTCHA_DIR_NAME)
+                    CAPTCHA_DIR: captchaDir
+                },
+                onCaptchaRequired,
+                (msg) => this.logger.info(msg),
+                (msg)=>this.state.waitingForCaptcha = msg,
+                () => this.shouldStop
+            );
+        } finally {
+            // 登录阶段结束后再藏回后台
+            await this._hideBrowserAfterIntervention();
+        }
 
         if (this.shouldStop) {
             throw new Error('用户停止登录');

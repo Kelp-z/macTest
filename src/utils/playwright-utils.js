@@ -46,8 +46,13 @@ async function humanType(page, locator, text) {
 
     await locator.fill('');
     for (const char of text) {
-        await locator.type(char, { delay: 50 + Math.random() * 80 });
-        await page.waitForTimeout(10);
+        // 略微加长击键间隔，更接近真人输入
+        await locator.type(char, { delay: 80 + Math.random() * 140 });
+        if (Math.random() < 0.08) {
+            await page.waitForTimeout(120 + Math.random() * 280);
+        } else {
+            await page.waitForTimeout(15 + Math.random() * 40);
+        }
     }
 }
 

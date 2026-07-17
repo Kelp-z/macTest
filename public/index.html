@@ -995,13 +995,24 @@
     let currentErrorScreenshotUrl = null;  // 存储当前任务的错误截图 URL
     let allLogs = [];
     let currentFilter = 'hideInfo' //过滤模式
-    let autoTakeEnabled = false;
+    // 与页面开关默认 checked 一致，启动即自动接取
+    let autoTakeEnabled = true;
     let isTakingTask = false;
 
     let electronToken = null;
     let backendToken = null;
     let captchaVisibleTimestamp = 0;  // 验证码最后显示时间戳
     let captchaResolveForIntervention = null;  // user-intervention-require
+
+    /** 请求后端把屏外 Chromium 拉回可见区域（验证码 / 点任务栏看不到时） */
+    async function requestShowBrowser() {
+        try {
+            await fetch('/api/browser/show', { method: 'POST' });
+            addLog('info', '已请求将浏览器移回屏幕内');
+        } catch (e) {
+            addLog('warn', `拉回浏览器失败: ${e.message}`);
+        }
+    }
 
     //  更新进度弹窗逻辑
     const updateToast = document.getElementById('update-toast');
@@ -2198,6 +2209,12 @@
             requestBody.outputDir = outputDir;
         }
 
+        // 绑定当前 App 登录用户，后端按用户隔离第三方账密与会话
+        const spmUsername = localStorage.getItem('username') || '';
+        if (spmUsername) {
+            requestBody.spmUsername = spmUsername;
+        }
+
         const res = await apiRequest(`${baseUrl}/crawl/start`, 'POST', requestBody);
         addLog('success', `${apiInfo.name || task.type} 检索启动成功：${res.msg || '操作成功'}`);
         return true;
@@ -3052,6 +3069,18 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     timestamp: Date.now()
                 }));
 
+                // 上报当前自动接取状态，与页面开关保持一致
+                try {
+                    const switchEl = document.getElementById('autoTakeSwitch');
+                    if (switchEl) {
+                        autoTakeEnabled = !!switchEl.checked;
+                    }
+                    stompClient.send("/app/autoTakeStatus", {"Content-Type": "application/json"},
+                        JSON.stringify({ autoTakeEnabled: autoTakeEnabled }));
+                } catch (e) {
+                    addLog('warn', `上报自动接取状态失败: ${e.message}`);
+                }
+
                 // 订阅终止任务队列
                 stompClient.subscribe('/user/queue/terminate', function (message) {
                     try {
@@ -3408,7 +3437,9 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                         addLog('info', interventionData.instruction);
                     }
 
-                    // 使用 Electron 原生对话框提醒用户
+                    // 仅人机验证时拉回浏览器
+                    await requestShowBrowser();
+
                     if (window.electronAPI && window.electronAPI.showMessageBox) {
                         await window.electronAPI.showMessageBox({
                             type: 'warning',
@@ -3418,7 +3449,6 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                             buttons: ['我知道了']
                         });
                     } else {
-                        // 降级为 alert
                         alert(interventionData.message || '请完成人机验证');
                     }
 
@@ -3430,7 +3460,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                         addLog('info', interventionData.instruction);
                     }
 
-                    // 使用 Electron 原生对话框
+                    await requestShowBrowser();
+
                     if (window.electronAPI && window.electronAPI.showMessageBox) {
                         await window.electronAPI.showMessageBox({
                             type: 'info',
@@ -3440,11 +3471,9 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                             buttons: ['我知道了']
                         });
                     } else {
-                        // 降级为 alert
                         alert(interventionData.message || '请手动登录');
                     }
 
-                    // 这里不提交结果，后端会通过 URL 变化自动检测
                     result = 'notified';
                     break;
 
@@ -3460,6 +3489,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                         }
                         manualModeTimer = null;
                     }, 60000);
+
+                    await requestShowBrowser();
 
                     if (window.electronAPI && window.electronAPI.showMessageBox) {
                         await window.electronAPI.showMessageBox({
@@ -3520,16 +3551,20 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     currentCaptchaId = id;
                     saveCaptchaState(id, fullUrl, 'captcha');
 
+                    // 学术猫等图片验证码 / 登录：仅此时拉回浏览器
+                    await requestShowBrowser();
+
                     if (window.electronAPI && window.electronAPI.showMessageBox) {
                         await window.electronAPI.showMessageBox({
                             type: 'info',
                             title: '验证码',
-                            message: '请输入验证码',
-                            detail: '请在界面输入框中填写验证码后点击"提交"',
+                            message: interventionData.message || '请输入验证码',
+                            detail: interventionData.instruction ||
+                                '请在界面输入验证码；也可直接在弹出的浏览器中手动登录。',
                             buttons: ['我知道了']
                         });
                     } else {
-                        alert('请输入验证码');
+                        alert('请输入验证码（浏览器窗口也会弹出，可手动登录）');
                     }
                     // 等待用户输入验证码
                     let code;

@@ -9,15 +9,16 @@ chromium.use(StealthPlugin());
 
 /**
  * 基础反检测参数 - 禁用自动化标记和后台限制
+ * 注意：不过度注入“确定性渲染 / 关闭同源策略”等异常参数，否则更容易触发 Google 人机验证
  */
 const CHROME_ARGS = [
     '--disable-blink-features=AutomationControlled',      // 禁用自动化控制标记
     '--disable-infobars',                                // 禁用"Chrome正受到自动测试软件控制"
     '--disable-background-timer-throttling',             // 后台标签不禁用定时器
-    '--disable-backgrounding-occluded-windows',            // 最小化窗口不暂停渲染
+    '--disable-backgrounding-occluded-windows',            // 遮挡/屏外窗口不暂停渲染
     '--disable-renderer-backgrounding',                  // 渲染进程不被降级
-    '--disable-features=IsolateOrigins,site-per-process', // 禁用站点隔离
-    '--disable-site-isolation-trials',
+    '--no-first-run',
+    '--no-default-browser-check',
 ];
 /**
  * Docker/容器环境专用参数
@@ -38,7 +39,7 @@ const CHROME_HEADLESS_ARGS = [
 ];
 
 /**
- * 禁用安全限制参数（谨慎使用，仅在受控环境启用）
+ * 禁用安全限制参数（谨慎使用，仅在受控环境启用；对 Google 易增加风控）
  */
 const CHROME_DISABLE_SECURITY_ARGS = [
     '--disable-web-security',
@@ -46,7 +47,7 @@ const CHROME_DISABLE_SECURITY_ARGS = [
 ];
 
 /**
- * 确定性渲染参数 - 确保渲染一致性，减少环境差异指纹
+ * 确定性渲染参数 - 指纹异常，默认关闭
  */
 const CHROME_DETERMINISTIC_RENDERING_ARGS = [
     '--deterministic-mode',
@@ -57,9 +58,18 @@ const CHROME_DETERMINISTIC_RENDERING_ARGS = [
     '--disable-threaded-scrolling',
     '--disable-checker-imaging',
 ];
+
+/** 屏外隐藏时的窗口坐标（保持 normal 状态，比最小化更不易触发风控） */
+const OFFSCREEN_WINDOW_POSITION = { left: -32000, top: 0 };
+
+/** 判定窗口仍在屏外的阈值 */
+const OFFSCREEN_LEFT_THRESHOLD = -500;
+
 class BrowserManager {
     constructor() {
         this.browsersPath = this._findBrowsersPath();
+        this._offscreenGuardProc = null;
+        this._offscreenGuardEnabled = false;
     }
 
     /**
@@ -444,9 +454,13 @@ class BrowserManager {
     async _buildAntiDetectArgs(options = {}) {
         const {
             headless = false,
-            remoteDebuggingPort = 9222,
+            startMinimized = true,
+            hideMode = 'minimized',
+            remoteDebuggingPort = null,
             extraBrowserArgs = [],
-            customArgs = []
+            customArgs = [],
+            disableSecurityArgs = false,
+            deterministicRendering = false
         } = options;
 
         const chromeArgs = new Set();
@@ -454,8 +468,14 @@ class BrowserManager {
         // 第一层：基础反检测参数注入
         CHROME_ARGS.forEach(arg => chromeArgs.add(arg));
         CHROME_DOCKER_ARGS.forEach(arg => chromeArgs.add(arg));
-        CHROME_DISABLE_SECURITY_ARGS.forEach(arg => chromeArgs.add(arg));
-        CHROME_DETERMINISTIC_RENDERING_ARGS.forEach(arg => chromeArgs.add(arg));
+
+        // 高风险参数默认关闭，避免 Google 风控
+        if (disableSecurityArgs) {
+            CHROME_DISABLE_SECURITY_ARGS.forEach(arg => chromeArgs.add(arg));
+        }
+        if (deterministicRendering) {
+            CHROME_DETERMINISTIC_RENDERING_ARGS.forEach(arg => chromeArgs.add(arg));
+        }
 
         // Headless 模式伪装参数
         if (headless) {
@@ -465,12 +485,22 @@ class BrowserManager {
         // 第二层：窗口尺寸与位置仿真
         let screenSize, offsetX, offsetY;
         if (headless) {
-            // Headless 模式：模拟标准桌面分辨率
             screenSize = { width: 1920, height: 1080 };
             offsetX = 0;
             offsetY = 0;
+        } else if (startMinimized && hideMode === 'offscreen') {
+            // 屏外启动：窗口仍是 normal，比 --start-minimized 更接近真实用户
+            screenSize = this._getScreenResolution();
+            offsetX = OFFSCREEN_WINDOW_POSITION.left;
+            offsetY = OFFSCREEN_WINDOW_POSITION.top;
+        } else if (startMinimized) {
+            // 默认：任务栏最小化，仅人机验证/登录时再恢复
+            chromeArgs.add('--start-minimized');
+            screenSize = this._getScreenResolution();
+            const adjustments = this._getWindowAdjustments();
+            offsetX = adjustments.offsetX;
+            offsetY = adjustments.offsetY;
         } else {
-            // 有头模式：获取真实屏幕分辨率并计算偏移
             screenSize = this._getScreenResolution();
             const adjustments = this._getWindowAdjustments();
             offsetX = adjustments.offsetX;
@@ -480,12 +510,14 @@ class BrowserManager {
         chromeArgs.add(`--window-position=${offsetX},${offsetY}`);
         chromeArgs.add(`--window-size=${screenSize.width},${screenSize.height}`);
 
-        // 第三层：远程调试端口冲突智能处理
-        const portInUse = await this._isPortInUse(remoteDebuggingPort);
-        if (!portInUse) {
-            chromeArgs.add(`--remote-debugging-port=${remoteDebuggingPort}`);
-        } else {
-            console.warn(`[BrowserManager] 远程调试端口 ${remoteDebuggingPort} 已被占用，跳过注入以避免启动失败`);
+        // 第三层：远程调试端口（默认不注入，该端口是常见自动化指纹）
+        if (typeof remoteDebuggingPort === 'number' && remoteDebuggingPort > 0) {
+            const portInUse = await this._isPortInUse(remoteDebuggingPort);
+            if (!portInUse) {
+                chromeArgs.add(`--remote-debugging-port=${remoteDebuggingPort}`);
+            } else {
+                console.warn(`[BrowserManager] 远程调试端口 ${remoteDebuggingPort} 已被占用，跳过注入以避免启动失败`);
+            }
         }
 
         // 合并用户自定义参数（去重）
@@ -499,6 +531,8 @@ class BrowserManager {
      * 启动浏览器
      * @param {Object} options - 浏览器启动选项
      * @param {boolean} options.headless - 是否无头模式（默认 false）
+     * @param {boolean} options.startMinimized - 有头模式下是否最小化启动（默认 true）
+     * @param {boolean} options.showOnIntervention - 需要人机验证/登录时是否恢复窗口（默认 true）
      * @param {string} options.executablePath - 浏览器可执行文件路径
      * @param {string[]} options.args - 额外的 Chrome 启动参数
      * @param {string} options.userDataDir - 用户数据目录
@@ -509,29 +543,23 @@ class BrowserManager {
     async launch(options = {}) {
         const {
             headless = false,
+            startMinimized = true,
+            showOnIntervention = true,
+            hideMode = 'minimized',
+            keepAlive = true,
             executablePath = null,
             args = [],
             userDataDir = null,
-            remoteDebuggingPort = 9222,
-            extraBrowserArgs = []
+            remoteDebuggingPort = null,
+            extraBrowserArgs = [],
+            disableSecurityArgs = false,
+            deterministicRendering = false
         } = options;
 
-        // // 启动前强制清理残留进程，避免端口/连接冲突
-        // if (process.platform === 'win32') {
-        //     try {
-        //         const { execSync } = require('child_process');
-        //         execSync('taskkill /F /IM chrome.exe /T 2>nul', { stdio: 'ignore' });
-        //         execSync('taskkill /F /IM chromium.exe /T 2>nul', { stdio: 'ignore' });
-        //         console.log('[BrowserManager] 已清理残留浏览器进程');
-        //         // 等待进程完全退出和端口释放
-        //         await new Promise(r => setTimeout(r, 2000));
-        //     } catch (e) {
-        //         // 忽略错误（可能没有残留进程）
-        //     }
-        // }
-
-        // 只杀 Playwright 残留的浏览器，不碰用户正常打开的 Chrome
-        await this._killPlaywrightBrowsersOnly();
+        // keepAlive 时不杀残留进程，避免误杀其它常驻浏览器；非常驻时仍清理
+        if (!keepAlive) {
+            await this._killPlaywrightBrowsersOnly();
+        }
 
         let browserPath = executablePath;
         if (!browserPath) {
@@ -540,16 +568,14 @@ class BrowserManager {
         // 构建完整的反检测启动参数
         const antiDetectArgs = await this._buildAntiDetectArgs({
             headless,
+            startMinimized,
+            hideMode,
             remoteDebuggingPort,
             extraBrowserArgs,
-            customArgs: args
+            customArgs: args,
+            disableSecurityArgs,
+            deterministicRendering
         });
-        // const launchArgs = [
-        //     '--no-sandbox',
-        //     '--disable-blink-features=AutomationControlled',
-        //     '--disable-dev-shm-usage',
-        //     ...args
-        // ];
         console.log('BrowserManager 启动参数:', antiDetectArgs);
         const launchOptions = {
             executablePath: browserPath,
@@ -563,10 +589,543 @@ class BrowserManager {
 
         const browser = await chromium.launch(launchOptions);
 
-        // 设置浏览器关闭标记
+        // 设置浏览器关闭标记与窗口可见性策略
         browser._isClosedByUser = false;
+        browser._visibilityOptions = {
+            headless: !!headless,
+            startMinimized: !headless && startMinimized !== false,
+            showOnIntervention: showOnIntervention !== false,
+            hideMode: hideMode === 'offscreen' ? 'offscreen' : 'minimized',
+            keepAlive: keepAlive !== false
+        };
+        browser._windowVisible = !browser._visibilityOptions.startMinimized;
+        browser._screenSize = this._getScreenResolution();
 
         return browser;
+    }
+
+    /**
+     * 使用持久化用户目录启动（复用 Cookie / 本地存储，降低 Google 人机验证）
+     * @param {string} userDataDir
+     * @param {Object} options
+     * @returns {Promise<{browser: Object, context: Object, page: Object}>}
+     */
+    async launchPersistent(userDataDir, options = {}) {
+        const {
+            headless = false,
+            startMinimized = true,
+            showOnIntervention = true,
+            hideMode = 'minimized',
+            keepAlive = true,
+            executablePath = null,
+            args = [],
+            remoteDebuggingPort = null,
+            extraBrowserArgs = [],
+            disableSecurityArgs = false,
+            deterministicRendering = false,
+            downloadsPath = null,
+            userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            locale = 'zh-CN',
+            timezoneId = 'Asia/Shanghai'
+        } = options;
+
+        if (!keepAlive) {
+            await this._killPlaywrightBrowsersOnly();
+        }
+
+        let browserPath = executablePath;
+        if (!browserPath) {
+            browserPath = await this.ensureBrowser();
+        }
+
+        if (!fs.existsSync(userDataDir)) {
+            fs.mkdirSync(userDataDir, { recursive: true });
+        }
+
+        const antiDetectArgs = await this._buildAntiDetectArgs({
+            headless,
+            startMinimized,
+            hideMode,
+            remoteDebuggingPort,
+            extraBrowserArgs,
+            customArgs: args,
+            disableSecurityArgs,
+            deterministicRendering
+        });
+
+        console.log('BrowserManager 持久化启动参数:', antiDetectArgs);
+
+        const context = await chromium.launchPersistentContext(userDataDir, {
+            executablePath: browserPath,
+            headless,
+            args: antiDetectArgs,
+            viewport: null,
+            locale,
+            timezoneId,
+            userAgent,
+            acceptDownloads: true,
+            ...(downloadsPath ? { downloadsPath } : {})
+        });
+
+        // launchPersistentContext 在部分版本中 context.browser() 可能为 null，做兼容包装
+        let browser = context.browser();
+        if (!browser) {
+            browser = {
+                _isPersistentWrapper: true,
+                _persistentContext: context,
+                isConnected: () => {
+                    try {
+                        return context.pages().some(p => !p.isClosed());
+                    } catch (e) {
+                        return false;
+                    }
+                },
+                close: async () => context.close(),
+                on: () => {},
+                removeListener: () => {},
+                newContext: async () => {
+                    throw new Error('持久化模式下请复用已有 context，勿再 newContext');
+                }
+            };
+        } else {
+            browser._persistentContext = context;
+        }
+
+        browser._isClosedByUser = false;
+        browser._visibilityOptions = {
+            headless: !!headless,
+            startMinimized: !headless && startMinimized !== false,
+            showOnIntervention: showOnIntervention !== false,
+            hideMode: hideMode === 'offscreen' ? 'offscreen' : 'minimized',
+            keepAlive: keepAlive !== false
+        };
+        browser._windowVisible = !browser._visibilityOptions.startMinimized;
+        browser._screenSize = this._getScreenResolution();
+
+        const page = context.pages()[0] || await context.newPage();
+        return { browser, context, page };
+    }
+
+    /**
+     * 通过 CDP 设置浏览器窗口边界/状态
+     * @param {Object} page
+     * @param {Object} bounds - CDP Browser.Bounds
+     * @returns {Promise<boolean>}
+     */
+    async _setWindowBounds(page, bounds) {
+        if (!page || page.isClosed()) return false;
+
+        let session = null;
+        try {
+            session = await page.context().newCDPSession(page);
+            const { windowId } = await session.send('Browser.getWindowForTarget');
+            await session.send('Browser.setWindowBounds', { windowId, bounds });
+            return true;
+        } catch (error) {
+            console.warn(`[BrowserManager] 设置窗口边界失败: ${error.message}`);
+            return false;
+        } finally {
+            if (session) {
+                await session.detach().catch(() => {});
+            }
+        }
+    }
+
+    /**
+     * 通过 CDP 设置浏览器窗口状态
+     * @param {Object} page - Playwright page
+     * @param {'normal'|'minimized'|'maximized'|'fullscreen'} windowState
+     * @returns {Promise<boolean>}
+     */
+    async _setWindowState(page, windowState) {
+        return this._setWindowBounds(page, { windowState });
+    }
+
+    /**
+     * 将浏览器窗口藏到后台（默认屏外，避免最小化触发风控）
+     * @param {Object} page - Playwright page
+     * @param {Object} [browser] - browser 实例（可选，用于读取策略）
+     */
+    async hideWindow(page, browser = null) {
+        const browserRef = browser || (typeof page?.context?.()?.browser === 'function' ? page.context().browser() : null);
+        const options = browserRef?._visibilityOptions || {};
+        if (options.headless || options.startMinimized === false) {
+            return;
+        }
+
+        this._stopOffscreenFocusGuard();
+
+        let ok = false;
+        if (options.hideMode === 'offscreen') {
+            const screenSize = browserRef?._screenSize || this._getScreenResolution();
+            ok = await this._setWindowBounds(page, {
+                left: OFFSCREEN_WINDOW_POSITION.left,
+                top: OFFSCREEN_WINDOW_POSITION.top,
+                width: screenSize.width,
+                height: screenSize.height,
+                windowState: 'normal'
+            });
+            // 仅 offscreen 模式启用焦点守卫；minimized 模式不自动弹窗
+            this._startOffscreenFocusGuard();
+        } else {
+            // 默认：任务栏最小化
+            ok = await this._setWindowState(page, 'minimized');
+            await this._minimizeChromiumWin32();
+        }
+        if (browserRef) {
+            browserRef._windowVisible = false;
+        }
+        return ok;
+    }
+
+    /**
+     * 在需要人机验证 / 登录时恢复并前置浏览器窗口
+     * @param {Object} page - Playwright page
+     * @param {Object} [browser] - browser 实例（可选）
+     */
+    async showWindow(page, browser = null) {
+        const browserRef = browser || (typeof page?.context?.()?.browser === 'function' ? page.context().browser() : null);
+        const options = browserRef?._visibilityOptions || {};
+        if (options.headless) {
+            return;
+        }
+        if (options.showOnIntervention === false) {
+            return;
+        }
+
+        this._stopOffscreenFocusGuard();
+
+        const screenSize = browserRef?._screenSize || this._getScreenResolution();
+        const adjustments = this._getWindowAdjustments();
+        const targetBounds = {
+            left: Math.max(adjustments.offsetX, 80),
+            top: Math.max(adjustments.offsetY, 80),
+            width: Math.min(Math.max(screenSize.width - 160, 1024), 1440),
+            height: Math.min(Math.max(screenSize.height - 160, 720), 900),
+            windowState: 'normal'
+        };
+
+        // 先恢复 normal，再设到可见区域（避免仍停在屏外）
+        if (page && !page.isClosed()) {
+            await this._setWindowBounds(page, { windowState: 'normal' });
+            const ok = await this._setWindowBounds(page, targetBounds);
+            try {
+                await page.bringToFront();
+            } catch (e) {
+                // 忽略
+            }
+            if (ok) {
+                console.log('[BrowserManager] 已恢复浏览器窗口供用户干预');
+            } else {
+                console.warn('[BrowserManager] CDP 恢复窗口可能失败，已尝试系统前置');
+            }
+        }
+
+        // Windows 下再强制把 Chromium 窗口拉到前台（任务栏点了也看不见时的兜底）
+        await this._bringChromiumToForegroundWin32();
+
+        if (browserRef) {
+            browserRef._windowVisible = true;
+        }
+    }
+
+    /**
+     * 仅通过系统 API 把检索用 Chromium 拉回可见区域（无需 page 引用）
+     * 仅应在人机验证 / 登录干预时由前端或爬虫调用
+     */
+    async forceShowChromiumWindows() {
+        this._stopOffscreenFocusGuard();
+        await this._bringChromiumToForegroundWin32();
+        console.log('[BrowserManager] 已强制将 Chromium 窗口移回屏幕内');
+    }
+
+    /**
+     * Windows：将检索用 Chromium 最小化到任务栏（仅主窗口，避免误伤子窗口）
+     */
+    async _minimizeChromiumWin32() {
+        if (process.platform !== 'win32') return;
+        try {
+            const { execFileSync } = require('child_process');
+            const psPath = path.join(os.tmpdir(), `spm_min_chrome_${Date.now()}.ps1`);
+            const ps = this._buildWin32ChromeMainWindowScript('minimize');
+            fs.writeFileSync(psPath, ps, 'utf8');
+            execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psPath], {
+                timeout: 8000,
+                stdio: 'ignore'
+            });
+            try { fs.unlinkSync(psPath); } catch (e) {}
+        } catch (e) {
+            console.warn('[BrowserManager] Win32 最小化失败:', e.message);
+        }
+    }
+
+    /**
+     * 生成仅操作「一个主浏览器窗口」的 PowerShell（Chrome 每个进程有大量 HWND，全部 ShowWindow 会一次弹出很多窗）
+     * @param {'show'|'minimize'} action
+     */
+    _buildWin32ChromeMainWindowScript(action = 'show') {
+        const doShow = action === 'show';
+        return `
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Collections.Generic;
+public class ChromeMainWin {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc lpEnumFunc, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  // 只收集「无 owner、足够大」的顶层主窗口，排除 Chrome 大量工具/幽灵 HWND
+  public static IntPtr FindLargestMainWindow(HashSet<int> pids) {
+    IntPtr best = IntPtr.Zero;
+    long bestArea = 0;
+    EnumWindows((hWnd, lParam) => {
+      uint pid;
+      GetWindowThreadProcessId(hWnd, out pid);
+      if (!pids.Contains((int)pid)) return true;
+      if (!IsWindow(hWnd)) return true;
+      if (GetWindow(hWnd, 4) != IntPtr.Zero) return true; // GW_OWNER=4，有 owner 的不是主窗
+      if (!IsWindowVisible(hWnd) && !IsIconic(hWnd)) return true;
+      RECT r;
+      if (!GetWindowRect(hWnd, out r)) return true;
+      int w = r.Right - r.Left;
+      int h = r.Bottom - r.Top;
+      if (w < 400 || h < 300) return true; // 过滤小弹层/托盘类窗口
+      long area = (long)w * h;
+      if (area > bestArea) { bestArea = area; best = hWnd; }
+      return true;
+    }, IntPtr.Zero);
+    return best;
+  }
+}
+"@
+$pids = New-Object 'System.Collections.Generic.HashSet[int]'
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {
+    ($_.Name -match 'chrome|chromium') -and
+    ($_.CommandLine -match 'playwright|user-data-dir=.*browser-profiles|crawler_clean')
+  } |
+  ForEach-Object { [void]$pids.Add([int]$_.ProcessId) }
+
+# 绝不再回退到本机全部 chrome.exe，否则会把用户自己的浏览器也全部拉起来
+
+if ($pids.Count -eq 0) { exit 0 }
+$h = [ChromeMainWin]::FindLargestMainWindow($pids)
+if ($h -eq [IntPtr]::Zero) { exit 0 }
+${doShow ? `
+[void][ChromeMainWin]::ShowWindow($h, 9)
+[void][ChromeMainWin]::SetWindowPos($h, [IntPtr]::Zero, 80, 80, 1280, 800, 0x0040)
+Start-Sleep -Milliseconds 80
+[void][ChromeMainWin]::SetForegroundWindow($h)
+` : `
+[void][ChromeMainWin]::ShowWindow($h, 6)
+`}
+`;
+    }
+
+    /**
+     * 屏外隐藏期间守护：用户点击任务栏谷歌图标激活窗口时，自动移回屏幕
+     * （仅 hideMode=offscreen 时启用；默认 minimized 不会启动）
+     */
+    _startOffscreenFocusGuard() {
+        if (process.platform !== 'win32') return;
+        if (this._offscreenGuardEnabled && this._offscreenGuardProc && !this._offscreenGuardProc.killed) {
+            return;
+        }
+        this._stopOffscreenFocusGuard();
+        this._offscreenGuardEnabled = true;
+
+        try {
+            const { spawn } = require('child_process');
+            const psPath = path.join(os.tmpdir(), `spm_offscreen_guard_${process.pid}.ps1`);
+            const threshold = OFFSCREEN_LEFT_THRESHOLD;
+            const ps = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Collections.Generic;
+public class OffscreenGuard {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc lpEnumFunc, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public static IntPtr FindLargestMainWindow(HashSet<int> pids) {
+    IntPtr best = IntPtr.Zero;
+    long bestArea = 0;
+    EnumWindows((hWnd, lParam) => {
+      uint pid;
+      GetWindowThreadProcessId(hWnd, out pid);
+      if (!pids.Contains((int)pid)) return true;
+      if (!IsWindow(hWnd)) return true;
+      if (GetWindow(hWnd, 4) != IntPtr.Zero) return true;
+      if (!IsWindowVisible(hWnd) && !IsIconic(hWnd)) return true;
+      RECT r;
+      if (!GetWindowRect(hWnd, out r)) return true;
+      int w = r.Right - r.Left; int h = r.Bottom - r.Top;
+      if (w < 400 || h < 300) return true;
+      long area = (long)w * h;
+      if (area > bestArea) { bestArea = area; best = hWnd; }
+      return true;
+    }, IntPtr.Zero);
+    return best;
+  }
+  public static bool IsOffscreen(IntPtr hWnd, int threshold) {
+    RECT r;
+    if (!GetWindowRect(hWnd, out r)) return false;
+    return r.Left < threshold || r.Top < threshold;
+  }
+}
+"@
+$ErrorActionPreference = 'SilentlyContinue'
+while ($true) {
+  $pids = New-Object 'System.Collections.Generic.HashSet[int]'
+  Get-CimInstance Win32_Process |
+    Where-Object {
+      ($_.Name -match 'chrome|chromium') -and
+      ($_.CommandLine -match 'playwright|user-data-dir=.*browser-profiles|crawler_clean')
+    } |
+    ForEach-Object { [void]$pids.Add([int]$_.ProcessId) }
+
+  if ($pids.Count -gt 0) {
+    $h = [OffscreenGuard]::FindLargestMainWindow($pids)
+    if ($h -ne [IntPtr]::Zero) {
+      $fg = [OffscreenGuard]::GetForegroundWindow()
+      $isFg = ($h -eq $fg)
+      $off = [OffscreenGuard]::IsOffscreen($h, ${threshold})
+      if ($isFg -and $off) {
+        [void][OffscreenGuard]::ShowWindow($h, 9)
+        [void][OffscreenGuard]::SetWindowPos($h, [IntPtr]::Zero, 80, 80, 1280, 800, 0x0040)
+        Start-Sleep -Milliseconds 50
+        [void][OffscreenGuard]::SetForegroundWindow($h)
+      }
+    }
+  }
+  Start-Sleep -Milliseconds 600
+}
+`;
+            fs.writeFileSync(psPath, ps, 'utf8');
+            this._offscreenGuardProc = spawn('powershell.exe', [
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psPath
+            ], {
+                windowsHide: true,
+                stdio: 'ignore'
+            });
+            this._offscreenGuardProc.on('exit', () => {
+                this._offscreenGuardProc = null;
+                try { fs.unlinkSync(psPath); } catch (e) {}
+            });
+            console.log('[BrowserManager] 已启动屏外焦点守卫（点击任务栏谷歌图标会自动移回屏幕）');
+        } catch (e) {
+            console.warn('[BrowserManager] 启动屏外焦点守卫失败:', e.message);
+            this._offscreenGuardEnabled = false;
+        }
+    }
+
+    _stopOffscreenFocusGuard() {
+        this._offscreenGuardEnabled = false;
+        if (this._offscreenGuardProc && !this._offscreenGuardProc.killed) {
+            try {
+                this._offscreenGuardProc.kill();
+            } catch (e) {}
+        }
+        this._offscreenGuardProc = null;
+        try {
+            const psPath = path.join(os.tmpdir(), `spm_offscreen_guard_${process.pid}.ps1`);
+            if (fs.existsSync(psPath)) fs.unlinkSync(psPath);
+        } catch (e) {}
+    }
+
+    /**
+     * Windows：将 Playwright/Chromium 主窗口还原并前置（只动 1 个主窗，避免一次弹出大量 HWND）
+     */
+    async _bringChromiumToForegroundWin32() {
+        if (process.platform !== 'win32') return;
+        const now = Date.now();
+        // 短时间去重：前端弹窗 + 爬虫 showWindow 可能连续触发
+        if (this._lastBringAt && (now - this._lastBringAt) < 1500) {
+            return;
+        }
+        this._lastBringAt = now;
+        try {
+            const { execFileSync } = require('child_process');
+            const psPath = path.join(os.tmpdir(), `spm_bring_chrome_${Date.now()}.ps1`);
+            const ps = this._buildWin32ChromeMainWindowScript('show');
+            fs.writeFileSync(psPath, ps, 'utf8');
+            execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psPath], {
+                timeout: 10000,
+                stdio: 'ignore'
+            });
+            try { fs.unlinkSync(psPath); } catch (e) {}
+        } catch (e) {
+            console.warn('[BrowserManager] Win32 前置窗口失败:', e.message);
+        }
+    }
+
+    /**
+     * 页面创建后应用初始可见性（默认屏外后台）
+     * @param {Object} page
+     * @param {Object} browser
+     */
+    async applyInitialVisibility(page, browser) {
+        const options = browser?._visibilityOptions || {};
+        if (options.headless || !options.startMinimized) {
+            return;
+        }
+        await new Promise(r => setTimeout(r, 300));
+        await this.hideWindow(page, browser);
+        console.log(`[BrowserManager] 浏览器已在后台运行（模式: ${options.hideMode || 'offscreen'}）`);
+    }
+
+    /**
+     * 获取/创建持久化用户数据目录（复用 Cookie，降低 Google 人机验证频率）
+     * @param {string} profileName
+     * @returns {string}
+     */
+    getPersistentUserDataDir(profileName = 'default') {
+        const baseDir = path.join(process.cwd(), 'browser-profiles', profileName);
+        if (!fs.existsSync(baseDir)) {
+            fs.mkdirSync(baseDir, { recursive: true });
+        }
+        return baseDir;
+    }
+
+    /**
+     * 干预期间临时显示窗口，结束后再隐藏回后台
+     * @param {Object} page
+     * @param {Function} asyncFn
+     * @param {Object} [browser]
+     * @returns {Promise<*>}
+     */
+    async withVisibleWindow(page, asyncFn, browser = null) {
+        const browserRef = browser || (typeof page?.context?.()?.browser === 'function' ? page.context().browser() : null);
+        const wasVisible = browserRef?._windowVisible === true;
+        await this.showWindow(page, browserRef);
+        try {
+            return await asyncFn();
+        } finally {
+            if (!wasVisible) {
+                await this.hideWindow(page, browserRef);
+            }
+        }
     }
     /**
      * 强制终止所有 Playwright 相关的浏览器进程（仅 Windows）
@@ -617,13 +1176,12 @@ class BrowserManager {
      */
     async createPage(browser, contextOptions = {}) {
         const {
-            userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             acceptDownloads = true,
             downloadsPath = null,
             locale = 'zh-CN',
             timezoneId,
             timezone_id,
-            // viewport = { width: 1280, height: 800 }
             viewport =  null
         } = contextOptions;
 
@@ -705,7 +1263,12 @@ class BrowserManager {
 
                 // 先移除监听器，避免触发意外关闭回调
                 this.removeBrowserCloseListener(browser);
-                await browser.close();
+
+                if (browser._persistentContext) {
+                    await browser._persistentContext.close();
+                } else {
+                    await browser.close();
+                }
             } catch (error) {
                 console.error(`关闭浏览器失败: ${error.message}`);
 

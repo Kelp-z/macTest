@@ -14,7 +14,10 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
 
         const crawlerConfig = this.configManager.getCrawlerConfig('google-author');
         this.searchConfig = {
-            OUTPUT_BASE_DIR_NAME: crawlerConfig.OUTPUT_BASE_DIR_NAME ?? 'output/google_authors'
+            OUTPUT_BASE_DIR_NAME: crawlerConfig.OUTPUT_BASE_DIR_NAME ?? 'output/google_authors',
+            PERSIST_PROFILE: crawlerConfig.PERSIST_PROFILE !== false,
+            SEARCH_DELAY_MIN_MS: crawlerConfig.SEARCH_DELAY_MIN_MS ?? 5000,
+            SEARCH_DELAY_MAX_MS: crawlerConfig.SEARCH_DELAY_MAX_MS ?? 12000
         };
 
         this.authorResultList = [];
@@ -83,10 +86,29 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
      * 初始化浏览器
      */
     async initBrowser() {
-        this.browser = await this.browserManager.launch(this.configManager.browserOptions);
-        const { page, context } = await this.browserManager.createPage(this.browser);
-        this.page = page;
-        this.context = context;
+        if (this._isBrowserAlive()) {
+            this.logger.info('复用 Google Scholar Author 常驻浏览器（保持最小化）');
+            await this.browserManager.hideWindow(this.page, this.browser);
+            this._setupBrowserCloseListener();
+            return;
+        }
+
+        const browserOptions = this.configManager.getBrowserOptions();
+        if (this.searchConfig.PERSIST_PROFILE) {
+            const profileDir = this.browserManager.getPersistentUserDataDir('google-scholar-author');
+            const { browser, context, page } = await this.browserManager.launchPersistent(profileDir, browserOptions);
+            this.browser = browser;
+            this.context = context;
+            this.page = page;
+            this.logger.info(`已启用 Google Scholar Author 持久化配置: ${profileDir}`);
+        } else {
+            this.browser = await this.browserManager.launch(browserOptions);
+            const { page, context } = await this.browserManager.createPage(this.browser);
+            this.page = page;
+            this.context = context;
+        }
+        await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        this._setupBrowserCloseListener();
         this.logger.info('浏览器已初始化');
     }
 
@@ -135,9 +157,12 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
                 this._recordFailedAuthor(authorName, error.message);
             }
 
-            // 作者之间随机延迟
+            // 作者之间随机延迟，降低验证频率
             if (i < authorNames.length - 1) {
-                await this._randomDelay(5000, 10000);
+                await this._randomDelay(
+                    this.searchConfig.SEARCH_DELAY_MIN_MS,
+                    this.searchConfig.SEARCH_DELAY_MAX_MS
+                );
             }
         }
 
@@ -633,6 +658,7 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
         return {
             logger: this.logger,
             browserManager: this.browserManager,
+            browser: this.browser,
             getCurrentOutputDir: () => this.currentOutputDir,
             shouldStopRef: () => this.shouldStop,
             isRunningRef: () => this.state?.isRunning ?? true

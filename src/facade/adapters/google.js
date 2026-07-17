@@ -37,11 +37,12 @@ function createGoogleCrawlerFacade() {
             return crawler.getState();
         },
 
-        // 重置爬虫内部状态
+        // 重置爬虫内部状态（先关常驻浏览器，再丢弃实例）
         resetState() {
+            if (crawlerInstance) {
+                Promise.resolve(crawlerInstance.cleanup({ force: true })).catch(() => {});
+            }
             crawlerInstance = null;
-            const crawler = getCrawler();
-            crawler.resetState();
         },
 
         // 重启爬虫
@@ -50,6 +51,7 @@ function createGoogleCrawlerFacade() {
             await crawler.stop();
             crawlerInstance = null;
             const newCrawler = new GoogleScholarCrawler();
+            crawlerInstance = newCrawler;
             await newCrawler.crawl({ keywords, options });
         },
 

@@ -423,6 +423,20 @@ app.post('/api/user-intervention/complete', (req, res) => {
         res.status(400).json({ code: 400, msg: '无效的干预类型' });
     }
 });
+
+// 将检索用 Chromium 从屏外拉回可见区域（验证码弹窗 / 用户点任务栏看不到时）
+app.post('/api/browser/show', async (req, res) => {
+    try {
+        const BrowserManager = require('./src/infrastructure/browser-manager');
+        const bm = new BrowserManager();
+        await bm.forceShowChromiumWindows();
+        res.json({ code: 200, msg: '浏览器已移回屏幕内' });
+    } catch (e) {
+        console.warn('[api/browser/show] 失败:', e.message);
+        res.status(500).json({ code: 500, msg: e.message || '显示浏览器失败' });
+    }
+});
+
 // 添加配置接口，供前端获取后端服务配置
 app.get('/api/config', (req, res) => {
     const backendConfig = configManager.getBackendConfig();
@@ -543,14 +557,20 @@ async function cleanupAllCrawlers() {
         try {
             const facade = registry.getExistingFacade(source);
             if (facade) {
-                const state = await facade.getState();
-                if (state.isRunning) {
-                    console.log(`停止 ${source} 爬虫...`);
+                // 无论是否在跑，都强制停掉（关闭 keepAlive 常驻浏览器）
+                console.log(`清理 ${source} 爬虫...`);
+                try {
                     await facade.stop();
-                    await facade.resetState();
-                    session.cancelSource(source, '服务器关闭');
-                    cleanedCount++;
+                } catch (e) {
+                    console.warn(`停止 ${source} 时:`, e.message);
                 }
+                try {
+                    facade.resetState();
+                } catch (e) {
+                    console.warn(`重置 ${source} 时:`, e.message);
+                }
+                session.cancelSource(source, '服务器关闭');
+                cleanedCount++;
             }
         } catch (err) {
             console.error(` 清理 ${source} 失败:`, err.message);

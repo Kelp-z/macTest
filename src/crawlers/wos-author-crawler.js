@@ -3,6 +3,10 @@ const BaseCrawler = require('../core/base-crawler');
 const fs = require('fs');
 const path = require('path');
 const {humanClick, humanType} = require('../utils/playwright-utils');
+const {
+    getWosAuthorCredentials,
+    saveWosAuthorCredentials
+} = require('../infrastructure/user-credentials-store');
 
 /**
  * WoS (Web of Science) 作者爬虫类
@@ -19,11 +23,13 @@ class WosAuthorCrawler extends BaseCrawler {
 
         };
 
-        // WoS 登录凭证（从 config.json 读取）
+        // WoS 登录凭证（按 SPM 用户隔离，启动任务时再加载）
         this.credentials = {
-            email: crawlerConfig.credentials?.email || '',
-            password: crawlerConfig.credentials?.password || ''
+            email: '',
+            password: ''
         };
+        this.spmUsername = '';
+        this._boundSpmUsername = null;
 
         this.authorsResultList = [];
         this.shouldStop = false;
@@ -37,6 +43,26 @@ class WosAuthorCrawler extends BaseCrawler {
         this.shouldStop = false;
         this.authorsResultList = [];
 
+        // 绑定当前 App 用户；切换用户时强制关闭浏览器，避免 Clarivate 会话串号
+        const spmUsername = String(this.crawlOptions?.spmUsername || '').trim();
+        this.spmUsername = spmUsername;
+        if (this._boundSpmUsername && spmUsername && this._boundSpmUsername !== spmUsername) {
+            this.logger.info(
+                `检测到 App 用户切换 (${this._boundSpmUsername} -> ${spmUsername})，关闭浏览器会话以防串号`
+            );
+            try {
+                await this.cleanup({ force: true });
+            } catch (e) {
+                this.logger.warn(`切换用户时关闭浏览器失败: ${e.message}`);
+            }
+            this.page = null;
+            this.context = null;
+            this.browser = null;
+        }
+        if (spmUsername) {
+            this._boundSpmUsername = spmUsername;
+        }
+
         const timestamp = new Date().toISOString().replace(/[-:\.T]/g, '').slice(0, 15);
         this.currentOutputDir = path.join(
             process.cwd(),
@@ -47,6 +73,11 @@ class WosAuthorCrawler extends BaseCrawler {
             fs.mkdirSync(this.currentOutputDir, {recursive: true});
         }
         this.logger.info(`输出目录已创建: ${this.currentOutputDir}`);
+        if (spmUsername) {
+            this.logger.info(`当前 App 用户: ${spmUsername}（WoS 账密按此用户隔离）`);
+        } else {
+            this.logger.warn('未传入 spmUsername，无法按用户隔离账密；请重新登录 App');
+        }
     }
 
     /**
@@ -82,35 +113,60 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     async login() {
-        this.logger.info('正在访问WoS 登录页面');
+        this.logger.info('正在准备 WoS 作者登录');
+        // 每次登录前从配置刷新凭证（上次手动登录可能已写入）
+        this._reloadCredentialsFromConfig();
+
+        // 若浏览器会话仍有效，直接进入搜索页，无需弹窗
+        try {
+            await this.page.goto(this.searchConfig.TARGET_URL, {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+            });
+            if (await this._isOnAuthorSearchReady()) {
+                this.logger.info('检测到有效登录会话，跳过登录与弹窗');
+                await this._closeCookiePopup();
+                await this._handlePostLoginInterventions();
+                return;
+            }
+        } catch (e) {
+            this.logger.info(`会话预检未通过，进入登录流程: ${e.message}`);
+        }
+
+        this.logger.info('正在访问 WoS 登录页面');
         await this.page.goto(this.searchConfig.LOGIN_URL, {
             waitUntil: 'domcontentloaded',
             timeout: 120000
-        })
+        });
         // 等待登录表单加载
         await this.page.waitForSelector('input[formcontrolname="email"]', {timeout: 15000});
         await this.page.waitForSelector('input[formcontrolname="password"]', {timeout: 15000});
 
-
         if (this.page.isClosed()) {
             throw new Error('浏览器窗口已关闭');
         }
-        // 检查是否有有效凭证
+        // 检查是否有有效凭证：有则静默自动登录，不再弹窗
         if (this.credentials.email && this.credentials.password) {
-            this.logger.info('使用自动登录模式');
+            this.logger.info(
+                `使用当前 App 用户(${this.spmUsername || '未知'})已保存的 WoS 账密自动登录（不弹窗）`
+            );
             await this._autoLogin();
+            this._persistCredentialsIfNeeded();
         } else {
-            this.logger.warn('请手动完成登录');
+            this.logger.warn('当前 App 用户无已保存的 WoS 账密，请手动完成登录（成功后按用户保存）');
             await this._manualLogin();
         }
 
         // 导航到作者搜索页
-        if (!this.page.url().includes('author/author-search')) {
+        if (!this._isAuthenticatedWosUrl(this.page.url())) {
             this.logger.info('导航到作者搜索页...');
             await this.page.goto(this.searchConfig.TARGET_URL, {
                 waitUntil: 'domcontentloaded',
                 timeout: 60000
             });
+        }
+        if (!(await this._isOnAuthorSearchReady())) {
+            throw new Error('登录后未能进入作者搜索页，请确认账号已登录成功');
         }
         await this._closeCookiePopup();
         await this.safeDelay(5000, 7000);
@@ -118,7 +174,140 @@ class WosAuthorCrawler extends BaseCrawler {
         await this._closeCookiePopup();
         // 处理登录后的弹窗和验证
         await this._handlePostLoginInterventions();
+    }
 
+    /**
+     * 按当前 App 用户加载 WoS 作者凭证（兼容旧版 config.json 全局账密并迁移）
+     */
+    _reloadCredentialsFromConfig() {
+        try {
+            if (this.spmUsername) {
+                const stored = getWosAuthorCredentials(this.spmUsername);
+                if (stored?.email && stored?.password) {
+                    this.credentials = {
+                        email: stored.email,
+                        password: stored.password
+                    };
+                    return;
+                }
+            }
+
+            // 兼容旧版：全局 config.json 中的账密，迁移到当前用户后清空全局
+            this.configManager.reload();
+            const crawlerConfig = this.configManager.getCrawlerConfig('wos-author');
+            const email = crawlerConfig.credentials?.email || '';
+            const password = crawlerConfig.credentials?.password || '';
+            if (email && password) {
+                this.credentials = { email, password };
+                if (this.spmUsername) {
+                    try {
+                        saveWosAuthorCredentials(this.spmUsername, this.credentials);
+                        this.configManager.updateCrawlerConfig('wos-author', {
+                            credentials: { email: '', password: '' }
+                        });
+                        this.logger.info(
+                            `已将全局 WoS 账密迁移到 App 用户「${this.spmUsername}」，并清除 config.json 中的共享凭证`
+                        );
+                    } catch (migrateErr) {
+                        this.logger.warn(`迁移全局账密失败: ${migrateErr.message}`);
+                    }
+                } else {
+                    this.logger.warn('使用旧版全局 WoS 账密（未绑定 App 用户，存在串号风险）');
+                }
+                return;
+            }
+
+            this.credentials = { email: '', password: '' };
+        } catch (e) {
+            this.logger.warn(`读取凭证失败: ${e.message}`);
+            this.credentials = { email: '', password: '' };
+        }
+    }
+
+    /**
+     * 将当前内存中的账密按 App 用户写入本地凭证库
+     */
+    _persistCredentialsIfNeeded() {
+        if (!this.credentials?.email || !this.credentials?.password) return;
+        if (!this.spmUsername) {
+            this.logger.warn('未绑定 App 用户，跳过保存 WoS 账密（请重新登录 App 后再手动登录一次）');
+            return;
+        }
+        try {
+            saveWosAuthorCredentials(this.spmUsername, {
+                email: this.credentials.email,
+                password: this.credentials.password
+            });
+            this.logger.info(
+                `WoS 作者账密已保存到 App 用户「${this.spmUsername}」，下次将自动登录`
+            );
+        } catch (e) {
+            this.logger.warn(`保存账密失败: ${e.message}`);
+        }
+    }
+
+    /**
+     * 从登录表单抓取用户已输入的邮箱密码
+     */
+    async _captureCredentialsFromForm() {
+        try {
+            const email = await this.page.locator('input[formcontrolname="email"]').inputValue().catch(() => '');
+            const password = await this.page.locator('input[formcontrolname="password"]').inputValue().catch(() => '');
+            if (email && password) {
+                this.credentials = { email: email.trim(), password };
+                return true;
+            }
+        } catch (e) {
+            // 页面可能已跳转
+        }
+        return false;
+    }
+
+    /**
+     * 是否已进入可用的作者搜索页（比单纯 URL 更可靠）
+     */
+    async _isOnAuthorSearchReady() {
+        try {
+            const url = this.page.url();
+            if (!this._isAuthenticatedWosUrl(url)) return false;
+            // 作者搜索页常见输入框
+            const searchInput = this.page.locator(
+                'input[placeholder*="author" i], input[aria-label*="author" i], input[data-ta="author-search-input"], mat-form-field input'
+            ).first();
+            const visible = await searchInput.isVisible({ timeout: 5000 }).catch(() => false);
+            if (visible) return true;
+            // URL 已是 author-search 也视为成功（不同地区 DOM 可能不同）
+            return url.toLowerCase().includes('author-search') || url.toLowerCase().includes('/wos/author');
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
+     * 严格判断是否为「已登录后的 WoS」地址（排除注册页）
+     */
+    _isAuthenticatedWosUrl(url) {
+        const u = String(url || '').toLowerCase();
+        if (!u) return false;
+        // 注册 / 创建账号等
+        if (/register|sign[\s_-]*up|create[\s_-]*account|registration|enrol/.test(u)) {
+            return false;
+        }
+        // 仍在 Clarivate 登录入口
+        if (u.includes('access.clarivate.com') && u.includes('login')) {
+            return false;
+        }
+        if (u.includes('/login') && !u.includes('webofscience')) {
+            return false;
+        }
+        // 已进入 Web of Science 作者相关站
+        if (u.includes('webofscience') && (u.includes('/wos/author') || u.includes('author-search'))) {
+            return true;
+        }
+        if (u.includes('webofscience.clarivate') && !u.includes('login')) {
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -237,15 +426,14 @@ class WosAuthorCrawler extends BaseCrawler {
 
                 const currentUrl = this.page.url();
 
-                // 检测是否离开登录页（优先判断，不需要读取 content）
-                if (!currentUrl.includes('login') &&
-                    (currentUrl.includes('wos') || currentUrl.includes('clarivate'))) {
+                // 严格：必须进入已登录的 WoS 作者站，排除注册页
+                if (this._isAuthenticatedWosUrl(currentUrl)) {
                     this.logger.info('检测到页面跳转，登录成功');
                     return true;
                 }
 
                 // 只在 URL 仍在登录页时才检查错误提示
-                if (currentUrl.includes('login')) {
+                if (currentUrl.includes('login') && !/register|sign[\s_-]*up/.test(currentUrl.toLowerCase())) {
                     try {
                         const content = await this.page.content();
                         if (content.includes('Please try again') ||
@@ -280,43 +468,60 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     /**
-     * 手动登录（等待用户操作）
+     * 手动登录（等待用户操作）；成功后把账密按 App 用户写入本地凭证库
      */
     async _manualLogin() {
         if (!this.state.isRunning) {
             throw new Error('爬虫已停止，登录中断');
         }
-        this.logger.warn('请在浏览器中手动输入账号密码并点击登录');
+        this.logger.warn('请在浏览器中手动输入账号密码并点击登录（不要只点注册切换）');
 
-        this._sendManualLoginNotification().catch(err => {
-            this.logger.warn(`发送通知失败: ${err.message}`);
-        });
-        const startTime = Date.now();
-        const timeout = 10 * 60 * 1000; // 10分钟超时
+        await this._showBrowserForIntervention();
+        try {
+            this._sendManualLoginNotification().catch(err => {
+                this.logger.warn(`发送通知失败: ${err.message}`);
+            });
+            const startTime = Date.now();
+            const timeout = 10 * 60 * 1000; // 10分钟超时
 
-        while (Date.now() - startTime < timeout && this.state.isRunning) {
-            if (!this.page || this.page.isClosed()) {
-                throw new Error('浏览器窗口已关闭，登录中断');
-            }
-            try {
-                const currentUrl = this.page.url();
-                if (!currentUrl.includes('login') &&
-                    (currentUrl.includes('wos') || currentUrl.includes('author'))) {
-                    this.logger.info('检测到用户已手动登录');
-                    return;
-                }
-            } catch (error) {
-                // 如果获取 URL 失败（如页面关闭），也抛出错误
-                if (this.page && this.page.isClosed()) {
+            while (Date.now() - startTime < timeout && this.state.isRunning) {
+                if (!this.page || this.page.isClosed()) {
                     throw new Error('浏览器窗口已关闭，登录中断');
                 }
-                // 其他错误忽略，继续等待
-                this.logger.warn(`获取页面URL失败: ${error.message}`);
-            }
-            await this.safeDelay(2000, 2000);
-        }
+                try {
+                    // 还在登录页时持续抓取表单账密，跳转后就读不到了
+                    const url = this.page.url();
+                    if (url.includes('login') || url.includes('access.clarivate.com')) {
+                        await this._captureCredentialsFromForm();
+                    }
 
-        throw new Error('用户手动登录超时（10分钟）');
+                    if (this._isAuthenticatedWosUrl(url) || await this._isOnAuthorSearchReady()) {
+                        // 若跳转前没抓到密码，再试一次（可能还在 SPA 过渡）
+                        if (!this.credentials.password) {
+                            await this._captureCredentialsFromForm();
+                        }
+                        this.logger.info('检测到用户已手动登录成功');
+                        this._persistCredentialsIfNeeded();
+                        return;
+                    }
+
+                    // 点到注册页：明确提示，不要当成已登录
+                    if (/register|sign[\s_-]*up|create[\s_-]*account|registration/i.test(url)) {
+                        this.logger.warn('当前在注册页，请切回登录并完成登录（不会判定为已登录）');
+                    }
+                } catch (error) {
+                    if (this.page && this.page.isClosed()) {
+                        throw new Error('浏览器窗口已关闭，登录中断');
+                    }
+                    this.logger.warn(`获取页面状态失败: ${error.message}`);
+                }
+                await this.safeDelay(2000, 2000);
+            }
+
+            throw new Error('用户手动登录超时（10分钟）');
+        } finally {
+            await this._hideBrowserAfterIntervention();
+        }
     }
 
     /**
@@ -336,7 +541,7 @@ class WosAuthorCrawler extends BaseCrawler {
             source: this.crawlerType,
             data: {
                 message: '请在弹出的浏览器窗口中手动登录 WoS 账号',
-                instruction: '1. 输入邮箱和密码\n2. 点击登录按钮\n3. 登录成功后爬虫将自动继续'
+                instruction: '1. 输入邮箱和密码并点击登录（不要只点注册）\n2. 登录成功后账密会写入配置，下次自动登录且不再弹窗\n3. 爬虫将自动继续'
             }
         });
 
@@ -383,6 +588,7 @@ class WosAuthorCrawler extends BaseCrawler {
         ];
         const startTime = Date.now();
         let notified = false;
+        let windowShown = false;
 
         while (Date.now() - startTime < timeoutMs && this.state.isRunning) {
             const content = await this.page.content();
@@ -393,6 +599,8 @@ class WosAuthorCrawler extends BaseCrawler {
                 if (!notified) {
                     notified = true;
                     this.logger.warn('检测到人机验证，请在浏览器中手动完成验证');
+                    await this._showBrowserForIntervention();
+                    windowShown = true;
                     try {
                         const io = require('../infrastructure/socket-io-manager').getIo();
                         if (io) {
@@ -418,10 +626,16 @@ class WosAuthorCrawler extends BaseCrawler {
                 if (notified) {
                     this.logger.info('人机验证已完成，继续执行');
                 }
+                if (windowShown) {
+                    await this._hideBrowserAfterIntervention();
+                }
                 return;
             }
         }
 
+        if (windowShown) {
+            await this._hideBrowserAfterIntervention();
+        }
         if (Date.now() - startTime >= timeoutMs) {
             throw new Error('等待人机验证超时（10分钟）');
         }
@@ -502,15 +716,20 @@ class WosAuthorCrawler extends BaseCrawler {
                 await this.safeDelay(5000, 5000);
             } else {
                 this.logger.warn('请手动完成跨境数据传输确认');
-                while (Date.now() - startTime < timeoutMs && this.state.isRunning) {
-                    const newContent = await this.page.content();
-                    if (!newContent.includes(targetText)) {
-                        this.logger.info('用户已手动完成跨境确认');
-                        return;
+                await this._showBrowserForIntervention();
+                try {
+                    while (Date.now() - startTime < timeoutMs && this.state.isRunning) {
+                        const newContent = await this.page.content();
+                        if (!newContent.includes(targetText)) {
+                            this.logger.info('用户已手动完成跨境确认');
+                            return;
+                        }
+                        await this.safeDelay(5000, 5000);
                     }
-                    await this.safeDelay(5000, 5000);
+                    throw new Error('等待跨境确认超时');
+                } finally {
+                    await this._hideBrowserAfterIntervention();
                 }
-                throw new Error('等待跨境确认超时');
             }
         }
     }
