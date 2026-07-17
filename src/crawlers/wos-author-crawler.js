@@ -5,7 +5,8 @@ const path = require('path');
 const {humanClick, humanType} = require('../utils/playwright-utils');
 const {
     getWosAuthorCredentials,
-    saveWosAuthorCredentials
+    saveWosAuthorCredentials,
+    loadLegacyUserCredentials
 } = require('../infrastructure/user-credentials-store');
 
 /**
@@ -23,13 +24,13 @@ class WosAuthorCrawler extends BaseCrawler {
 
         };
 
-        // WoS 登录凭证（按 SPM 用户隔离，启动任务时再加载）
+        // WoS 登录凭证（按终端 ID 隔离，启动任务时再加载）
         this.credentials = {
             email: '',
             password: ''
         };
-        this.spmUsername = '';
-        this._boundSpmUsername = null;
+        this.terminalId = '';
+        this._boundTerminalId = null;
 
         this.authorsResultList = [];
         this.shouldStop = false;
@@ -43,24 +44,28 @@ class WosAuthorCrawler extends BaseCrawler {
         this.shouldStop = false;
         this.authorsResultList = [];
 
-        // 绑定当前 App 用户；切换用户时强制关闭浏览器，避免 Clarivate 会话串号
-        const spmUsername = String(this.crawlOptions?.spmUsername || '').trim();
-        this.spmUsername = spmUsername;
-        if (this._boundSpmUsername && spmUsername && this._boundSpmUsername !== spmUsername) {
+        // 绑定当前终端；切换终端时强制关闭浏览器，避免 Clarivate 会话串号
+        const terminalId = String(
+            this.crawlOptions?.terminalId ||
+            this.crawlOptions?.terminalID ||
+            ''
+        ).trim();
+        this.terminalId = terminalId;
+        if (this._boundTerminalId && terminalId && this._boundTerminalId !== terminalId) {
             this.logger.info(
-                `检测到 App 用户切换 (${this._boundSpmUsername} -> ${spmUsername})，关闭浏览器会话以防串号`
+                `检测到终端切换 (${this._boundTerminalId} -> ${terminalId})，关闭浏览器会话以防串号`
             );
             try {
                 await this.cleanup({ force: true });
             } catch (e) {
-                this.logger.warn(`切换用户时关闭浏览器失败: ${e.message}`);
+                this.logger.warn(`切换终端时关闭浏览器失败: ${e.message}`);
             }
             this.page = null;
             this.context = null;
             this.browser = null;
         }
-        if (spmUsername) {
-            this._boundSpmUsername = spmUsername;
+        if (terminalId) {
+            this._boundTerminalId = terminalId;
         }
 
         const timestamp = new Date().toISOString().replace(/[-:\.T]/g, '').slice(0, 15);
@@ -73,10 +78,10 @@ class WosAuthorCrawler extends BaseCrawler {
             fs.mkdirSync(this.currentOutputDir, {recursive: true});
         }
         this.logger.info(`输出目录已创建: ${this.currentOutputDir}`);
-        if (spmUsername) {
-            this.logger.info(`当前 App 用户: ${spmUsername}（WoS 账密按此用户隔离）`);
+        if (terminalId) {
+            this.logger.info(`当前终端: ${terminalId}（WoS 账密按终端隔离）`);
         } else {
-            this.logger.warn('未传入 spmUsername，无法按用户隔离账密；请重新登录 App');
+            this.logger.warn('未传入 terminalId，无法按终端隔离账密');
         }
     }
 
@@ -148,12 +153,12 @@ class WosAuthorCrawler extends BaseCrawler {
         // 检查是否有有效凭证：有则静默自动登录，不再弹窗
         if (this.credentials.email && this.credentials.password) {
             this.logger.info(
-                `使用当前 App 用户(${this.spmUsername || '未知'})已保存的 WoS 账密自动登录（不弹窗）`
+                `使用当前终端(${this.terminalId || '未知'})已保存的 WoS 账密自动登录（不弹窗）`
             );
             await this._autoLogin();
             this._persistCredentialsIfNeeded();
         } else {
-            this.logger.warn('当前 App 用户无已保存的 WoS 账密，请手动完成登录（成功后按用户保存）');
+            this.logger.warn('当前终端无已保存的 WoS 账密，请手动完成登录（成功后按终端保存）');
             await this._manualLogin();
         }
 
@@ -177,12 +182,12 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     /**
-     * 按当前 App 用户加载 WoS 作者凭证（兼容旧版 config.json 全局账密并迁移）
+     * 按当前终端加载 WoS 作者凭证（兼容旧版按用户库 / config.json 全局账密并迁移）
      */
     _reloadCredentialsFromConfig() {
         try {
-            if (this.spmUsername) {
-                const stored = getWosAuthorCredentials(this.spmUsername);
+            if (this.terminalId) {
+                const stored = getWosAuthorCredentials(this.terminalId);
                 if (stored?.email && stored?.password) {
                     this.credentials = {
                         email: stored.email,
@@ -192,27 +197,44 @@ class WosAuthorCrawler extends BaseCrawler {
                 }
             }
 
-            // 兼容旧版：全局 config.json 中的账密，迁移到当前用户后清空全局
+            // 兼容：旧版按 App 用户存储 → 迁移到当前终端
+            const legacy = loadLegacyUserCredentials();
+            if (legacy?.email && legacy?.password) {
+                this.credentials = { email: legacy.email, password: legacy.password };
+                if (this.terminalId) {
+                    try {
+                        saveWosAuthorCredentials(this.terminalId, this.credentials);
+                        this.logger.info(
+                            `已将旧版按用户存储的 WoS 账密迁移到终端「${this.terminalId}」`
+                        );
+                    } catch (migrateErr) {
+                        this.logger.warn(`迁移旧版用户账密失败: ${migrateErr.message}`);
+                    }
+                }
+                return;
+            }
+
+            // 兼容旧版：全局 config.json 中的账密，迁移到当前终端后清空全局
             this.configManager.reload();
             const crawlerConfig = this.configManager.getCrawlerConfig('wos-author');
             const email = crawlerConfig.credentials?.email || '';
             const password = crawlerConfig.credentials?.password || '';
             if (email && password) {
                 this.credentials = { email, password };
-                if (this.spmUsername) {
+                if (this.terminalId) {
                     try {
-                        saveWosAuthorCredentials(this.spmUsername, this.credentials);
+                        saveWosAuthorCredentials(this.terminalId, this.credentials);
                         this.configManager.updateCrawlerConfig('wos-author', {
                             credentials: { email: '', password: '' }
                         });
                         this.logger.info(
-                            `已将全局 WoS 账密迁移到 App 用户「${this.spmUsername}」，并清除 config.json 中的共享凭证`
+                            `已将全局 WoS 账密迁移到终端「${this.terminalId}」，并清除 config.json 中的共享凭证`
                         );
                     } catch (migrateErr) {
                         this.logger.warn(`迁移全局账密失败: ${migrateErr.message}`);
                     }
                 } else {
-                    this.logger.warn('使用旧版全局 WoS 账密（未绑定 App 用户，存在串号风险）');
+                    this.logger.warn('使用旧版全局 WoS 账密（未绑定终端 ID）');
                 }
                 return;
             }
@@ -225,21 +247,21 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     /**
-     * 将当前内存中的账密按 App 用户写入本地凭证库
+     * 将当前内存中的账密按终端 ID 写入本地凭证库
      */
     _persistCredentialsIfNeeded() {
         if (!this.credentials?.email || !this.credentials?.password) return;
-        if (!this.spmUsername) {
-            this.logger.warn('未绑定 App 用户，跳过保存 WoS 账密（请重新登录 App 后再手动登录一次）');
+        if (!this.terminalId) {
+            this.logger.warn('未绑定终端 ID，跳过保存 WoS 账密');
             return;
         }
         try {
-            saveWosAuthorCredentials(this.spmUsername, {
+            saveWosAuthorCredentials(this.terminalId, {
                 email: this.credentials.email,
                 password: this.credentials.password
             });
             this.logger.info(
-                `WoS 作者账密已保存到 App 用户「${this.spmUsername}」，下次将自动登录`
+                `WoS 作者账密已保存到终端「${this.terminalId}」，下次将自动登录`
             );
         } catch (e) {
             this.logger.warn(`保存账密失败: ${e.message}`);
@@ -468,7 +490,7 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     /**
-     * 手动登录（等待用户操作）；成功后把账密按 App 用户写入本地凭证库
+     * 手动登录（等待用户操作）；成功后把账密按终端 ID 写入本地凭证库
      */
     async _manualLogin() {
         if (!this.state.isRunning) {

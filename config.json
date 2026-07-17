@@ -1,15 +1,23 @@
-
 {
   "LOG_BASE_DIR": "../log",
   "AUTO_CHECK": true,
   "AUTO_DOWNLOAD": true,
   "ERROR_SCREENSHOT_DIR_NAME": "screenshots",
+  "browser": {
+    "headless": false,
+    "startMinimized": true,
+    "hideMode": "minimized",
+    "showOnIntervention": true,
+    "keepAlive": true,
+    "disableSecurityArgs": false,
+    "deterministicRendering": false
+  },
   "backend": {
     "LOCAL_PORT": 3000,
     "SPRING_PORT": 8080,
     "LOCAL_HOST": "localhost",
     "LOCAL_BASE_URL": "http://localhost:3000",
-    "SPRING_BASE_URL": "http://spm.bonviewpress.com/stage-api"
+    "SPRING_BASE_URL": "http://localhost:8080"
   },
   "update": {
     "UPDATE_URL": "http://124.70.184.0:8100/",
@@ -19,12 +27,21 @@
   "googleScholar": {
     "PRECISE_SEARCH_ENABLED": true,
     "TITLE_SIMILARITY_THRESHOLD": 0.8,
+    "PREFER_FIRST_RESULT": true,
+    "MATCH_REQUEST_FIRST": true,
+    "QUOTED_TITLE_SEARCH": true,
     "VISIT_CITATION_ENABLED": true,
     "MAX_CITATION_PAGES": 2,
-    "OUTPUT_BASE_DIR_NAME": "../output/google"
+    "OUTPUT_BASE_DIR_NAME": "../output/google",
+    "PERSIST_PROFILE": true,
+    "SEARCH_DELAY_MIN_MS": 2000,
+    "SEARCH_DELAY_MAX_MS": 5000
   },
   "googleScholarAuthor": {
-    "OUTPUT_BASE_DIR_NAME": "../output/google_authors"
+    "OUTPUT_BASE_DIR_NAME": "../output/google_authors",
+    "PERSIST_PROFILE": true,
+    "SEARCH_DELAY_MIN_MS": 5000,
+    "SEARCH_DELAY_MAX_MS": 12000
   },
   "scopus": {
     "USER_NAME": "28199134",

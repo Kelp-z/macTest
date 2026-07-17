@@ -2209,10 +2209,9 @@
             requestBody.outputDir = outputDir;
         }
 
-        // 绑定当前 App 登录用户，后端按用户隔离第三方账密与会话
-        const spmUsername = localStorage.getItem('username') || '';
-        if (spmUsername) {
-            requestBody.spmUsername = spmUsername;
+        // 绑定当前终端机器码，后端按终端隔离第三方账密与会话
+        if (terminalMachineCode && terminalMachineCode !== 'unknown') {
+            requestBody.terminalId = terminalMachineCode;
         }
 
         const res = await apiRequest(`${baseUrl}/crawl/start`, 'POST', requestBody);
