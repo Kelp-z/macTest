@@ -28,6 +28,7 @@ class WosAuthorCrawler extends BaseCrawler {
         this.authorsResultList = [];
         this.shouldStop = false;
         this.currentOutputDir = null;
+
     }
 
     async beforeCrawl() {
