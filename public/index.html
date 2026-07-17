@@ -3870,6 +3870,11 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 } else {
                     addLog('info', '自动接取任务已关闭');
                 }
+
+                if (stompClient && stompClient.connected) {
+                    stompClient.send("/app/autoTakeStatus", {"Content-Type": "application/json"},
+                        JSON.stringify({ autoTakeEnabled: autoTakeEnabled }));
+                }
             });
 
             if (window.electronAPI && window.electronAPI.onQuitRequest) {
