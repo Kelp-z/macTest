@@ -816,11 +816,15 @@
             <div class="no-tasks">暂无待接取任务</div>
         </div>
     </div>
+<!--    自动接取任务可选择-->
     <label class="switch">
-        <input type="checkbox" id="autoTakeSwitch">
+        <input type="checkbox" id="autoTakeSwitch" checked>
         <span class="slider"></span>
     </label>
     <span class="switch-label">自动接取任务</span>
+
+<!--    默认自动接取且不可被更改-->
+<!--    <span class="switch-label" style="color: #409eff; font-weight: bold;">自动接取任务（已开启）</span>-->
     <div class="form-group" style="margin-top: 10px;display: none">
         <!--        <label>-->
         <!--            <input type="checkbox" id="generateExcelCheckbox" checked> 📊 生成Excel文件-->
@@ -3056,6 +3060,21 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                         handleTerminateTask(task);
                     } catch (e) {
                         addLog('error', `解析终止任务消息失败: ${e.message}`);
+                    }
+                });
+
+                // 订阅自动接取开关指令
+                stompClient.subscribe('/user/queue/autoTake', function (message) {
+                    try {
+                        const data = JSON.parse(message.body);
+                        autoTakeEnabled = data.autoTakeEnabled;
+                        const switchEl = document.getElementById('autoTakeSwitch');
+                        if (switchEl) {
+                            switchEl.checked = autoTakeEnabled;
+                        }
+                        addLog('info', `收到自动接取开关指令: ${autoTakeEnabled ? '已开启' : '已关闭'}`);
+                    } catch (e) {
+                        addLog('error', `解析自动接取开关消息失败: ${e.message}`);
                     }
                 });
             }, function (error) {
