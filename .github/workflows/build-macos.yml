@@ -26,12 +26,12 @@ jobs:
 
       - name: 打包 macOS 应用
         run: |
-          # 临时移除 Windows 版 browsers 目录，避免打包进 macOS 应用
-          mv browsers browsers_win_bak
+          # 如果存在 Windows 版 browsers 目录则临时移除，避免打包进 macOS 应用
+          [ -d browsers ] && mv browsers browsers_win_bak || true
           # npmRebuild=true 确保原生模块在 macOS 上重新编译
           npx electron-builder --mac dmg -p never --config.npmRebuild=true
           # 恢复
-          mv browsers_win_bak browsers
+          [ -d browsers_win_bak ] && mv browsers_win_bak browsers || true
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
