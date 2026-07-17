@@ -1,0 +1,40 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 安装 Playwright 浏览器 (macOS)
+        run: npx playwright install chromium --with-deps
+
+      - name: 打包 macOS 应用
+        run: |
+          # 临时移除 Windows 版 browsers 目录，避免打包进 macOS 应用
+          mv browsers browsers_win_bak
+          # npmRebuild=true 确保原生模块在 macOS 上重新编译
+          npx electron-builder --mac dmg -p never --config.npmRebuild=true
+          # 恢复
+          mv browsers_win_bak browsers
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SPM-Crawler-macOS
+          path: dist/*.dmg
