@@ -3079,7 +3079,13 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                 } catch (e) {
                     addLog('warn', `上报自动接取状态失败: ${e.message}`);
                 }
-
+                // 启动后延迟触发自动接取，防止后端推送任务时爬虫尚未就绪
+                setTimeout(() => {
+                    if (autoTakeEnabled && pendingTasks.length > 0) {
+                        addLog('info', '[启动] 检测到待接取任务，开始自动接取');
+                        checkAndTakeNextTask();
+                    }
+                }, 3000);
                 // 订阅终止任务队列
                 stompClient.subscribe('/user/queue/terminate', function (message) {
                     try {
