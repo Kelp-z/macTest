@@ -17,9 +17,9 @@ async function humanClick(page, locator) {
         const box = await locator.boundingBox();
         if (box) {
             await page.mouse.move(box.x + 10, box.y + 10, { steps: 8 });
-            await page.waitForTimeout(200);
+            await sleep(200);
             await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 8 });
-            await page.waitForTimeout(150);
+            await sleep(150);
         }
         await locator.click({ delay: 150 });
         return true;
@@ -75,11 +75,16 @@ async function humanType(page, locator, text, options = {}) {
 }
 
 /**
- * 随机延迟，模拟人类操作间隔
+ * 随机延迟，模拟人类操作间隔。
+ * 优先 page.waitForTimeout；不存在时回退 setTimeout（兼容新版 Playwright）。
  */
+async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function randomDelay(page, min = 500, max = 1500) {
     const delay = min + Math.random() * (max - min);
-    await page.waitForTimeout(delay);
+    await sleep(delay);
 }
 
 /**

@@ -79,71 +79,73 @@ class BrowserManager {
         const isPkg = !!process.pkg;
         const isElectron = !!process.versions.electron;
 
-
         if (isElectron) {
-            const { app } = require('electron');
-            // Electron 打包后，browsers 目录通常在资源目录或 userData 目录
-            return path.join(app.getAppPath(), '..', 'browsers');
-        } else if (isPkg) {
-            // pkg 打包后的可执行文件目录
-            return path.join(path.dirname(process.execPath), 'browsers');
-        } else {
-            // 开发环境
-            return path.join(process.cwd(), 'browsers');
+            try {
+                const { app } = require('electron');
+                // 开发态：项目根/browsers；打包态：可执行文件旁或 resources/browsers
+                const candidates = [
+                    path.join(process.cwd(), 'browsers'),
+                    path.join(path.dirname(process.execPath), 'browsers'),
+                    path.join(path.dirname(app.getAppPath()), 'browsers'),
+                    path.join(process.resourcesPath || '', 'browsers'),
+                    path.join(app.getPath('userData'), 'browsers')
+                ];
+                for (const dir of candidates) {
+                    if (dir && fs.existsSync(dir)) {
+                        return dir;
+                    }
+                }
+                return path.join(process.cwd(), 'browsers');
+            } catch (e) {
+                return path.join(process.cwd(), 'browsers');
+            }
         }
+        if (isPkg) {
+            return path.join(path.dirname(process.execPath), 'browsers');
+        }
+        return path.join(process.cwd(), 'browsers');
     }
 
     /**
-     * 递归查找本地浏览器可执行文件
+     * 在项目/安装包的 browsers 目录中递归查找浏览器可执行文件。
+     * 仅搜索 browsers 目录，绝不扫描本机 Program Files 等系统安装路径。
      */
     findLocalBrowser(startDir) {
-        console.log('\n=== 开始查找本地浏览器 ===');
+        console.log('\n=== 开始在 browsers 目录查找浏览器 ===');
 
-        //构建搜索目录列表
         const keyDirs = [];
+        const pushDir = (dir) => {
+            if (!dir) return;
+            const normalized = path.resolve(dir);
+            if (!keyDirs.includes(normalized)) {
+                keyDirs.push(normalized);
+            }
+        };
 
-        // 优先使用传入的起始目录或默认路径
         if (startDir) {
-            keyDirs.push(startDir);
-        } else {
-            keyDirs.push(this.browsersPath);
+            pushDir(startDir);
         }
 
-        // Electron 环境的额外路径
+        // 开发环境：cwd/browsers
+        pushDir(path.join(process.cwd(), 'browsers'));
+        pushDir(this.browsersPath);
+
+        // Electron：程序旁 browsers + userData/browsers
         if (process.versions.electron) {
             try {
                 const { app } = require('electron');
-                const appRootPath = path.dirname(app.getAppPath());
-                keyDirs.unshift(path.join(appRootPath, 'browsers'));
-                keyDirs.unshift(path.join(app.getPath('userData'), 'browsers'));
-                console.log(`Electron 环境，添加搜索路径:`);
-                console.log(`  - ${path.join(appRootPath, 'browsers')}`);
-                console.log(`  - ${path.join(app.getPath('userData'), 'browsers')}`);
+                pushDir(path.join(path.dirname(process.execPath), 'browsers'));
+                pushDir(path.join(path.dirname(app.getAppPath()), 'browsers'));
+                pushDir(path.join(app.getPath('userData'), 'browsers'));
+                console.log('Electron 环境，browsers 搜索路径已加入');
             } catch (e) {
                 console.warn(`获取 Electron 路径失败: ${e.message}`);
             }
         }
 
-        // pkg 打包环境的额外路径
+        // pkg 打包：可执行文件旁 browsers
         if (process.pkg) {
-            const pkgBrowsersPath = path.join(path.dirname(process.execPath), 'browsers');
-            if (!keyDirs.includes(pkgBrowsersPath)) {
-                keyDirs.push(pkgBrowsersPath);
-                console.log(`pkg 打包环境，添加搜索路径: ${pkgBrowsersPath}`);
-            }
-        }
-
-        // 通用备选路径
-        const fallbackDirs = [
-            path.join(process.cwd(), 'browsers'),
-            process.cwd(),
-            path.dirname(process.execPath)
-        ];
-
-        for (const dir of fallbackDirs) {
-            if (!keyDirs.includes(dir)) {
-                keyDirs.push(dir);
-            }
+            pushDir(path.join(path.dirname(process.execPath), 'browsers'));
         }
 
         console.log(`搜索目录列表 (${keyDirs.length} 个):`);
@@ -151,7 +153,6 @@ class BrowserManager {
             console.log(`  ${index + 1}. ${dir} ${fs.existsSync(dir) ? '✓' : '✗'}`);
         });
 
-        // 依次搜索每个目录
         for (const keyDir of keyDirs) {
             if (fs.existsSync(keyDir)) {
                 console.log(`\n正在搜索: ${keyDir}`);
@@ -163,7 +164,7 @@ class BrowserManager {
             }
         }
 
-        console.log('\n✗ 未找到本地浏览器文件');
+        console.log('\n✗ 未在 browsers 目录找到浏览器');
         return null;
     }
 
@@ -237,61 +238,19 @@ class BrowserManager {
     // }
 
     /**
-     * 查找本机已安装的 Google Chrome（优先于项目自带 Chromium，更接近真人环境）
-     * @returns {string|null}
-     */
-    findSystemChrome() {
-        const candidates = [];
-
-        if (process.platform === 'win32') {
-            const localAppData = process.env.LOCALAPPDATA || '';
-            const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
-            const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
-            candidates.push(
-                path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-                path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-                path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe')
-            );
-        } else if (process.platform === 'darwin') {
-            candidates.push(
-                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                path.join(os.homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome')
-            );
-        } else {
-            candidates.push(
-                '/usr/bin/google-chrome-stable',
-                '/usr/bin/google-chrome',
-                '/usr/bin/chrome',
-                '/snap/bin/chromium'
-            );
-        }
-
-        for (const p of candidates) {
-            if (p && fs.existsSync(p)) {
-                console.log(`✓ 找到系统 Google Chrome: ${p}`);
-                return p;
-            }
-        }
-        console.log('未找到系统 Google Chrome，将回退到项目 browsers 目录');
-        return null;
-    }
-
-    /**
-     * 确保浏览器可用：系统 Chrome → 项目自带 → 自动下载
+     * 确保浏览器可用：
+     * 1) 仅在项目/安装包 browsers 目录中查找
+     * 2) 找不到则用 Playwright 下载 Chromium 到 browsers，再用该副本
+     * 绝不使用本机系统安装的 Google Chrome（如 Program Files）。
      */
     async ensureBrowser() {
-        const systemChrome = this.findSystemChrome();
-        if (systemChrome) {
-            return systemChrome;
-        }
-
         const localBrowser = this.findLocalBrowser();
         if (localBrowser) {
-            console.log('✓ 找到项目自带浏览器:', localBrowser);
+            console.log('✓ 使用 browsers 目录中的浏览器:', localBrowser);
             return localBrowser;
         }
 
-        console.log('未找到可用浏览器，尝试自动下载 Chromium...');
+        console.log('browsers 目录未找到浏览器，尝试自动下载 Chromium...');
         return await this._downloadBrowser();
     }
     /**
@@ -748,6 +707,11 @@ class BrowserManager {
         browser._screenSize = this._getScreenResolution();
 
         const page = context.pages()[0] || await context.newPage();
+        // waitForTimeout polyfill (rebrowser-playwright may omit it)
+        if (page && typeof page.waitForTimeout !== 'function') {
+            page.waitForTimeout = (ms) =>
+                new Promise((resolve) => setTimeout(resolve, Number(ms) || 0));
+        }
         return { browser, context, page };
     }
 
@@ -1240,6 +1204,11 @@ while ($true) {
         });
 
         const page = await context.newPage();
+        // waitForTimeout polyfill (rebrowser-playwright may omit it)
+        if (typeof page.waitForTimeout !== 'function') {
+            page.waitForTimeout = (ms) =>
+                new Promise((resolve) => setTimeout(resolve, Number(ms) || 0));
+        }
         return { page, context };
     }
     /**

@@ -89,11 +89,15 @@ class ErrorHandler {
             return this.errorCodes.CAPTCHA_ERROR;
         }
 
-        // 浏览器错误
-        if (message.includes('browser') ||
-            message.includes('page closed') ||
+        // 浏览器错误（避免把 “…BrowserSiteKey is not a function” 这类代码错误误判进来）
+        if (message.includes('page closed') ||
             message.includes('target closed') ||
-            name.includes('browser')) {
+            message.includes('failed to launch') ||
+            message.includes('executable doesn\'t exist') ||
+            message.includes('无法获取浏览器') ||
+            message.includes('browser closed') ||
+            message.includes('browser has been closed') ||
+            /\bbrowser\b/.test(message) && !message.includes('is not a function')) {
             return this.errorCodes.BROWSER_ERROR;
         }
 
