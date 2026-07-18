@@ -17,7 +17,7 @@
     "SPRING_PORT": 8080,
     "LOCAL_HOST": "localhost",
     "LOCAL_BASE_URL": "http://localhost:3000",
-    "SPRING_BASE_URL": "http://localhost:8080"
+    "SPRING_BASE_URL": "http://spm.bonviewpress.com/stage-api"
   },
   "update": {
     "UPDATE_URL": "http://124.70.184.0:8100/",
