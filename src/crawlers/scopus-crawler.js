@@ -34,6 +34,10 @@ class ScopusCrawler extends BaseCrawler {
 
     }
 
+    _getBrowserHomeUrl() {
+        return this.searchConfig.BASE_URL || 'https://www.2447.net/';
+    }
+
     async beforeCrawl() {
         await super.beforeCrawl();
         this.logger.info('Scopus 爬虫初始化完成');

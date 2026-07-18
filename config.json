@@ -29,7 +29,7 @@
     "TITLE_SIMILARITY_THRESHOLD": 0.8,
     "PREFER_FIRST_RESULT": true,
     "MATCH_REQUEST_FIRST": true,
-    "QUOTED_TITLE_SEARCH": true,
+    "QUOTED_TITLE_SEARCH": false,
     "VISIT_CITATION_ENABLED": true,
     "MAX_CITATION_PAGES": 2,
     "OUTPUT_BASE_DIR_NAME": "../output/google",

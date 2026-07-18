@@ -1,5 +1,6 @@
 // core/base-crawler.js
 const BrowserManager = require('../infrastructure/browser-manager');
+const { getSharedBrowserPool } = require('../infrastructure/shared-browser-pool');
 const ExcelExporter = require('../infrastructure/excel-exporter');
 const ErrorHandler = require('../infrastructure/error-handler');
 const Logger = require('../infrastructure/logger');
@@ -28,6 +29,8 @@ class BaseCrawler {
         // 任务相关信息
         this.taskId = null;
         this.taskType = null;
+        /** 是否使用引擎级共享浏览器（单窗口多标签） */
+        this._usesSharedBrowser = true;
     }
     /**
      * 生成任务ID和任务类型
@@ -136,6 +139,14 @@ class BaseCrawler {
      */
     _isBrowserAlive() {
         try {
+            if (this._usesSharedBrowser) {
+                const pool = getSharedBrowserPool();
+                if (!pool.isAlive()) return false;
+                if (this.page && typeof this.page.isClosed === 'function' && this.page.isClosed()) {
+                    return false;
+                }
+                return !!(this.browser && this.page);
+            }
             if (!this.browser || !this.page) return false;
             if (typeof this.page.isClosed === 'function' && this.page.isClosed()) return false;
             if (typeof this.browser.isConnected === 'function' && !this.browser.isConnected()) return false;
@@ -145,7 +156,19 @@ class BaseCrawler {
         }
     }
 
+    /** 共享浏览器站点 key（scholar / wos / scopus） */
+    _getBrowserSiteKey() {
+        return getSharedBrowserPool().resolveSiteKey(this.crawlerType);
+    }
+
+    /** 站点首页；子类可覆盖。null 则用池内默认 */
+    _getBrowserHomeUrl() {
+        return null;
+    }
+
     _setupBrowserCloseListener() {
+        // 共享浏览器由 SharedBrowserPool 统一监听断开；此处只同步本爬虫引用
+        if (this._usesSharedBrowser) return;
         if (!this.browser) return;
         this.browserManager.removeBrowserCloseListener(this.browser);
         this.browserManager.setupBrowserCloseListener(this.browser, (closeInfo) => {
@@ -166,33 +189,65 @@ class BaseCrawler {
         });
     }
 
+    /**
+     * 初始化/附着到共享浏览器中的站点标签
+     */
     async initBrowser(){
-        // 复用已最小化的浏览器，避免每任务开关闪烁
-        if (this._isBrowserAlive()) {
-            this.logger.info('复用常驻浏览器（保持最小化）');
-            await this.browserManager.hideWindow(this.page, this.browser);
-            this._setupBrowserCloseListener();
-            return;
-        }
+        const pool = getSharedBrowserPool();
+        const siteKey = this._getBrowserSiteKey();
+        const homeUrl = this._getBrowserHomeUrl();
+        const browserOptions = this.configManager.getBrowserOptions();
 
-        this.browser = await this.browserManager.launch(this.configManager.getBrowserOptions());
-        const {page,context} = await this.browserManager.createPage(this.browser);
-        this.page = page;
+        const { browser, context, page, reused } = await pool.getOrCreateTab(
+            siteKey,
+            homeUrl,
+            browserOptions
+        );
+        this.browser = browser;
         this.context = context;
-        // 默认最小化到后台，避免检索时弹出窗口打断用户
-        await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        this.page = page;
+        this._usesSharedBrowser = true;
+
+        if (reused) {
+            this.logger.info(`复用共享浏览器标签 [${siteKey}]（保持最小化）`);
+            await pool.hide();
+        } else {
+            this.logger.info(`已在共享浏览器中打开标签 [${siteKey}]`);
+            await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        }
         this._setupBrowserCloseListener();
     }
 
     /**
-     * 清理浏览器
-     * @param {{force?: boolean}} options - force=true 时强制关闭（停止/重置/退出）
+     * 清理：默认只最小化，不关浏览器。
+     * @param {{force?: boolean, shutdown?: boolean}} options
+     *   - shutdown=true：引擎退出，真正关闭共享浏览器
+     *   - force=true：历史兼容，共享模式下仍不关浏览器（仅最小化）
      */
     async cleanup(options = {}){
-        const force = options.force === true;
+        const shutdown = options.shutdown === true;
+
+        try {
+            await getSharedBrowserPool().hide();
+        } catch (e) {
+            // 忽略
+        }
+
+        if (this._usesSharedBrowser) {
+            if (shutdown) {
+                this.logger.info('引擎退出：关闭共享浏览器');
+                await getSharedBrowserPool().shutdown();
+                this.browser = null;
+                this.page = null;
+                this.context = null;
+                return;
+            }
+            this.logger.info('浏览器保持最小化（共享常驻，标签保留）');
+            return;
+        }
+
         if (!this.browser) return;
 
-        // 先尽量缩回后台
         try {
             if (this.page && !this.page.isClosed()) {
                 await this.browserManager.hideWindow(this.page, this.browser);
@@ -201,16 +256,12 @@ class BaseCrawler {
             // 忽略
         }
 
-        if (this._shouldKeepBrowserAlive() && !force) {
+        if (this._shouldKeepBrowserAlive() && !options.force) {
             this.logger.info('keepAlive：浏览器保持最小化，供下一任务复用');
-            try {
-                this.browserManager.removeBrowserCloseListener(this.browser);
-            } catch (e) {}
             return;
         }
 
         try {
-            // 检查浏览器是否还连着
             if (this.browser.isConnected && this.browser.isConnected()) {
                 await this.browserManager.close(this.browser);
             } else if (this.browser._persistentContext) {
@@ -221,7 +272,6 @@ class BaseCrawler {
         } catch (error) {
             this.logger.warn(`清理浏览器时出错: ${error.message}`);
         } finally {
-            // 清空引用，避免后续代码误用
             this.browser = null;
             this.page = null;
             this.context = null;
@@ -258,10 +308,10 @@ class BaseCrawler {
         if (this.interventionSession) {
             this.interventionSession.cancelSource(this.crawlerType, '用户停止爬虫');
         }
-        // 停止时强制关闭常驻浏览器（勿先单独关 page，以免残留无页的 context）
-        await this.cleanup({ force: true });
+        // 停止任务：只最小化，不关浏览器（引擎在线仍可能接下一个任务）
+        await this.cleanup({ force: false });
 
-        this.logger.info('爬虫已停止');
+        this.logger.info('爬虫已停止（浏览器仍常驻后台）');
     }
     /**
      * 重置状态
@@ -274,9 +324,9 @@ class BaseCrawler {
             this.interventionSession.cancelSource(this.crawlerType, '状态重置');
         }
 
-        // 异步强制关闭常驻浏览器（reset 接口多为同步调用）
-        Promise.resolve(this.cleanup({ force: true })).catch((err) => {
-            this.logger.warn(`重置时关闭浏览器失败: ${err.message}`);
+        // 重置不关浏览器，仅缩到后台
+        Promise.resolve(this.cleanup({ force: false })).catch((err) => {
+            this.logger.warn(`重置时最小化浏览器失败: ${err.message}`);
         });
 
         // 重置基础状态
@@ -288,7 +338,7 @@ class BaseCrawler {
             result: null
         };
 
-        this.logger.info('爬虫状态已重置');
+        this.logger.info('爬虫状态已重置（浏览器仍常驻）');
     }
 
     async login(){

@@ -174,6 +174,7 @@ registerCrawlerRoutes({
     facade: registry.getCrawlerFacade('google'),
     io,
     session,
+    registry,
     validateInput: (input) => nonEmptyArray(input, '关键词数组'),
     inputFieldName: 'keywords',
     startSuccessMsg: '谷歌学术检索已启动',
@@ -186,6 +187,7 @@ registerCrawlerRoutes({
     facade: registry.getCrawlerFacade('google-author'),
     io,
     session,
+    registry,
     validateInput: (input) => nonEmptyArray(input, '作者姓名数组'),
     inputFieldName: 'keywords',
     startSuccessMsg: '谷歌学术作者检索已启动',
@@ -198,6 +200,7 @@ registerCrawlerRoutes({
     facade: registry.getCrawlerFacade('scopus'),
     io,
     session,
+    registry,
     validateInput: (input) => nonEmptyArray(input, '关键词数组'),
     inputFieldName: 'keywords',
     startSuccessMsg: 'Scopus检索已启动',
@@ -210,6 +213,7 @@ registerCrawlerRoutes({
     facade: registry.getCrawlerFacade('scopus-author'),
     io,
     session,
+    registry,
     validateInput: (input) => nonEmptyArray(input, '作者列表'),
     inputFieldName: 'authors',
     startSuccessMsg: 'Scopus作者检索已启动',
@@ -222,6 +226,7 @@ registerCrawlerRoutes({
     facade: registry.getCrawlerFacade('wos'),
     io,
     session,
+    registry,
     validateInput: (input) => nonEmptyArray(input, '关键词数组'),
     inputFieldName: 'keywords',
     startSuccessMsg: 'WoS检索已启动',
@@ -234,6 +239,7 @@ registerCrawlerRoutes({
     facade: registry.getCrawlerFacade('wos-author'),
     io,
     session,
+    registry,
     validateInput: (input) => nonEmptyArray(input, '作者列表'),
     inputFieldName: 'authors',
     startSuccessMsg: 'WoS作者检索已启动',
@@ -557,8 +563,7 @@ async function cleanupAllCrawlers() {
         try {
             const facade = registry.getExistingFacade(source);
             if (facade) {
-                // 无论是否在跑，都强制停掉（关闭 keepAlive 常驻浏览器）
-                console.log(`清理 ${source} 爬虫...`);
+                console.log(`清理 ${source} 爬虫任务状态...`);
                 try {
                     await facade.stop();
                 } catch (e) {
@@ -575,6 +580,15 @@ async function cleanupAllCrawlers() {
         } catch (err) {
             console.error(` 清理 ${source} 失败:`, err.message);
         }
+    }
+
+    // 引擎退出：真正关闭共享浏览器（唯一关闭点）
+    try {
+        const { getSharedBrowserPool } = require('./src/infrastructure/shared-browser-pool');
+        await getSharedBrowserPool().shutdown();
+        console.log('共享浏览器已关闭');
+    } catch (e) {
+        console.warn(`关闭共享浏览器失败: ${e.message}`);
     }
 
     // 关闭 Socket.IO

@@ -237,16 +237,61 @@ class BrowserManager {
     // }
 
     /**
-     * 确保浏览器可用（查找或下载）
+     * 查找本机已安装的 Google Chrome（优先于项目自带 Chromium，更接近真人环境）
+     * @returns {string|null}
+     */
+    findSystemChrome() {
+        const candidates = [];
+
+        if (process.platform === 'win32') {
+            const localAppData = process.env.LOCALAPPDATA || '';
+            const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
+            const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+            candidates.push(
+                path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe')
+            );
+        } else if (process.platform === 'darwin') {
+            candidates.push(
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                path.join(os.homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome')
+            );
+        } else {
+            candidates.push(
+                '/usr/bin/google-chrome-stable',
+                '/usr/bin/google-chrome',
+                '/usr/bin/chrome',
+                '/snap/bin/chromium'
+            );
+        }
+
+        for (const p of candidates) {
+            if (p && fs.existsSync(p)) {
+                console.log(`✓ 找到系统 Google Chrome: ${p}`);
+                return p;
+            }
+        }
+        console.log('未找到系统 Google Chrome，将回退到项目 browsers 目录');
+        return null;
+    }
+
+    /**
+     * 确保浏览器可用：系统 Chrome → 项目自带 → 自动下载
      */
     async ensureBrowser() {
+        const systemChrome = this.findSystemChrome();
+        if (systemChrome) {
+            return systemChrome;
+        }
+
         const localBrowser = this.findLocalBrowser();
         if (localBrowser) {
-            console.log('✓ 找到本地浏览器:', localBrowser);
+            console.log('✓ 找到项目自带浏览器:', localBrowser);
             return localBrowser;
         }
 
-        console.log('未找到本地浏览器，尝试自动下载...');
+        console.log('未找到可用浏览器，尝试自动下载 Chromium...');
         return await this._downloadBrowser();
     }
     /**
