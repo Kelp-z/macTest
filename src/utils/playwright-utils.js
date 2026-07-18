@@ -17,9 +17,9 @@ async function humanClick(page, locator) {
         const box = await locator.boundingBox();
         if (box) {
             await page.mouse.move(box.x + 10, box.y + 10, { steps: 8 });
-            await page.waitForTimeout(200);
+            await sleep(200);
             await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 8 });
-            await page.waitForTimeout(150);
+            await sleep(150);
         }
         await locator.click({ delay: 150 });
         return true;
@@ -36,32 +36,55 @@ async function humanClick(page, locator) {
 
 /**
  * 模拟人类输入：逐个字符输入，带随机延迟
+ * @param {object} [options]
+ * @param {boolean} [options.fast] - 检索场景用较快方式，大幅缩短长标题输入时间
  */
-async function humanType(page, locator, text) {
+async function humanType(page, locator, text, options = {}) {
     // 检查页面是否仍然可用
     if (!page || page.isClosed()) {
         console.log('人类输入跳过: 页面已关闭');
         return;
     }
 
+    const fast = options.fast === true;
+    // 长查询用稍快击键，但仍逐字输入（瞬时 fill 更容易触发 Scholar 风控）
+    if (fast && String(text || '').length > 24) {
+        await locator.fill('');
+        for (const char of String(text)) {
+            await locator.type(char, { delay: 80 + Math.random() * 100 });
+            if (Math.random() < 0.08) {
+                await page.waitForTimeout(120 + Math.random() * 200);
+            }
+        }
+        await page.waitForTimeout(120 + Math.random() * 180);
+        return;
+    }
+
     await locator.fill('');
     for (const char of text) {
-        // 略微加长击键间隔，更接近真人输入
-        await locator.type(char, { delay: 80 + Math.random() * 140 });
-        if (Math.random() < 0.08) {
+        const typeDelay = fast
+            ? (20 + Math.random() * 40)
+            : (80 + Math.random() * 140);
+        await locator.type(char, { delay: typeDelay });
+        if (!fast && Math.random() < 0.08) {
             await page.waitForTimeout(120 + Math.random() * 280);
         } else {
-            await page.waitForTimeout(15 + Math.random() * 40);
+            await page.waitForTimeout(fast ? (5 + Math.random() * 15) : (15 + Math.random() * 40));
         }
     }
 }
 
 /**
- * 随机延迟，模拟人类操作间隔
+ * 随机延迟，模拟人类操作间隔。
+ * 优先 page.waitForTimeout；不存在时回退 setTimeout（兼容新版 Playwright）。
  */
+async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function randomDelay(page, min = 500, max = 1500) {
     const delay = min + Math.random() * (max - min);
-    await page.waitForTimeout(delay);
+    await sleep(delay);
 }
 
 /**

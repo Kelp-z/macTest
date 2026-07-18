@@ -31,11 +31,13 @@ class WosAuthorCrawler extends BaseCrawler {
         };
         this.terminalId = '';
         this._boundTerminalId = null;
-
         this.authorsResultList = [];
         this.shouldStop = false;
         this.currentOutputDir = null;
+    }
 
+    _getBrowserHomeUrl() {
+        return this.searchConfig.LOGIN_URL || 'https://access.clarivate.com/login?app=wos';
     }
 
     async beforeCrawl() {
@@ -53,12 +55,13 @@ class WosAuthorCrawler extends BaseCrawler {
         this.terminalId = terminalId;
         if (this._boundTerminalId && terminalId && this._boundTerminalId !== terminalId) {
             this.logger.info(
-                `检测到终端切换 (${this._boundTerminalId} -> ${terminalId})，关闭浏览器会话以防串号`
+                `检测到终端切换 (${this._boundTerminalId} -> ${terminalId})，释放 WoS 标签以防串号（浏览器进程保留）`
             );
             try {
-                await this.cleanup({ force: true });
+                const { getSharedBrowserPool } = require('../infrastructure/shared-browser-pool');
+                await getSharedBrowserPool().releaseTab('wos');
             } catch (e) {
-                this.logger.warn(`切换终端时关闭浏览器失败: ${e.message}`);
+                this.logger.warn(`切换终端时释放 WoS 标签失败: ${e.message}`);
             }
             this.page = null;
             this.context = null;
@@ -143,35 +146,72 @@ class WosAuthorCrawler extends BaseCrawler {
             waitUntil: 'domcontentloaded',
             timeout: 120000
         });
-        // 等待登录表单加载
-        await this.page.waitForSelector('input[formcontrolname="email"]', {timeout: 15000});
-        await this.page.waitForSelector('input[formcontrolname="password"]', {timeout: 15000});
+        await this.safeDelay(1500, 2500);
 
-        if (this.page.isClosed()) {
-            throw new Error('浏览器窗口已关闭');
+        // 已登录会话访问 login URL 常会直接跳走，不会再出现邮箱框 —— 不能死等 email
+        if (await this._isOnAuthorSearchReady() || this._isPastLoginGate(this.page.url())) {
+            this.logger.info('访问登录页后已处于登录态，跳过填写账密');
+            if (!(await this._isOnAuthorSearchReady())) {
+                await this.page.goto(this.searchConfig.TARGET_URL, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 60000
+                });
+                await this.safeDelay(1500, 2500);
+            }
+            if (await this._isOnAuthorSearchReady()) {
+                await this._closeCookiePopup();
+                await this._handlePostLoginInterventions();
+                return;
+            }
         }
-        // 检查是否有有效凭证：有则静默自动登录，不再弹窗
-        if (this.credentials.email && this.credentials.password) {
-            this.logger.info(
-                `使用当前终端(${this.terminalId || '未知'})已保存的 WoS 账密自动登录（不弹窗）`
-            );
-            await this._autoLogin();
-            this._persistCredentialsIfNeeded();
+
+        const emailReady = await this.page.waitForSelector('input[formcontrolname="email"]', {
+            timeout: 20000,
+            state: 'visible'
+        }).then(() => true).catch(() => false);
+
+        if (!emailReady) {
+            // 可能卡在中间页 / 验证码 / 已跳转：再判断一次，否则转入手动
+            if (await this._isOnAuthorSearchReady() || this._isPastLoginGate(this.page.url())) {
+                this.logger.info('未出现邮箱框，但已进入 WoS，继续后续流程');
+            } else {
+                this.logger.warn('登录页邮箱框未出现，转入手动登录');
+                await this._manualLogin();
+            }
         } else {
-            this.logger.warn('当前终端无已保存的 WoS 账密，请手动完成登录（成功后按终端保存）');
+            await this.page.waitForSelector('input[formcontrolname="password"]', {
+                timeout: 15000,
+                state: 'visible'
+            });
+
+            if (this.page.isClosed()) {
+                throw new Error('浏览器窗口已关闭');
+            }
+            // 检查是否有有效凭证：有则静默自动登录；失败则转入手动登录等待
+            if (this.credentials.email && this.credentials.password) {
+                this.logger.info(
+                    `使用当前终端(${this.terminalId || '未知'})已保存的 WoS 账密自动登录（不弹窗）`
+                );
+                try {
+                    await this._autoLogin();
+                    this._persistCredentialsIfNeeded();
+                } catch (autoErr) {
+                    this.logger.warn(`自动登录失败，转为手动登录等待: ${autoErr.message}`);
+                    await this._manualLogin();
+                }
+            } else {
+                this.logger.warn('当前终端无已保存的 WoS 账密，请手动完成登录（成功后按终端保存）');
+                await this._manualLogin();
+            }
+        }
+
+        // 导航并等待作者搜索页（含 Cookie/跨境遮罩处理）
+        if (!(await this._ensureAuthorSearchPage({ maxNav: 2, waitMs: 50000 }))) {
+            this.logger.warn('登录后仍未看到作者搜索表单，请手动进入作者检索页');
             await this._manualLogin();
         }
-
-        // 导航到作者搜索页
-        if (!this._isAuthenticatedWosUrl(this.page.url())) {
-            this.logger.info('导航到作者搜索页...');
-            await this.page.goto(this.searchConfig.TARGET_URL, {
-                waitUntil: 'domcontentloaded',
-                timeout: 60000
-            });
-        }
         if (!(await this._isOnAuthorSearchReady())) {
-            throw new Error('登录后未能进入作者搜索页，请确认账号已登录成功');
+            throw new Error('登录后未能进入作者搜索页，请确认账号已登录并打开 Author Search 后再试');
         }
         await this._closeCookiePopup();
         await this.safeDelay(5000, 7000);
@@ -286,50 +326,161 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     /**
-     * 是否已进入可用的作者搜索页（比单纯 URL 更可靠）
+     * 是否已离开登录/注册页，进入 Web of Science（仅表示过了登录门，不代表可搜索）
+     */
+    _isPastLoginGate(url) {
+        const u = String(url || '').toLowerCase();
+        if (!u) return false;
+        if (/register|sign[\s_-]*up|create[\s_-]*account|registration|enrol/.test(u)) {
+            return false;
+        }
+        if (u.includes('access.clarivate.com') && (u.includes('login') || u.includes('sign'))) {
+            return false;
+        }
+        if (u.includes('/login') && !u.includes('webofscience')) {
+            return false;
+        }
+        // 必须已进入 webofscience 产品域
+        return u.includes('webofscience') && !u.includes('access.clarivate.com');
+    }
+
+    /**
+     * 是否已进入可用的作者搜索页（必须看到搜索表单，禁止仅凭 URL 误判）
      */
     async _isOnAuthorSearchReady() {
         try {
+            if (!this.page || this.page.isClosed()) return false;
             const url = this.page.url();
-            if (!this._isAuthenticatedWosUrl(url)) return false;
-            // 作者搜索页常见输入框
-            const searchInput = this.page.locator(
-                'input[placeholder*="author" i], input[aria-label*="author" i], input[data-ta="author-search-input"], mat-form-field input'
-            ).first();
-            const visible = await searchInput.isVisible({ timeout: 5000 }).catch(() => false);
-            if (visible) return true;
-            // URL 已是 author-search 也视为成功（不同地区 DOM 可能不同）
-            return url.toLowerCase().includes('author-search') || url.toLowerCase().includes('/wos/author');
+            if (!this._isPastLoginGate(url)) return false;
+
+            // 先清遮罩，避免表单被 Cookie 挡着导致一直判未就绪
+            await this._closeCookiePopup();
+
+            const selectors = [
+                '#snSearchType',
+                'app-author-search',
+                '[data-ta="author-search"]',
+                'input[data-ta="author-search-input"]',
+                'input[placeholder*="Last Name" i]',
+                'input[placeholder*="Family Name" i]',
+                'input[placeholder*="姓" i]',
+                'input[placeholder*="author" i]',
+                'input[aria-label*="author" i]',
+                'input[aria-label*="Last Name" i]',
+                'button[aria-label*="Search" i][data-ta*="search" i]'
+            ];
+            for (const sel of selectors) {
+                const el = this.page.locator(sel).first();
+                if (await el.isVisible({ timeout: 600 }).catch(() => false)) {
+                    return true;
+                }
+            }
+
+            // URL 已是作者检索，且页面上有可见文本输入（SPA 选择器偶发变化时的兜底）
+            if (/\/author\/author-search/i.test(url)) {
+                const visibleInputs = this.page.locator(
+                    'input[type="text"]:visible, input:not([type]):visible, input[matinput]:visible'
+                );
+                const count = await visibleInputs.count().catch(() => 0);
+                if (count >= 1) {
+                    return true;
+                }
+            }
+            return false;
         } catch (e) {
             return false;
         }
     }
 
     /**
-     * 严格判断是否为「已登录后的 WoS」地址（排除注册页）
+     * 导航并等待作者搜索页就绪（避免手动登录循环里反复盲 goto）
      */
-    _isAuthenticatedWosUrl(url) {
-        const u = String(url || '').toLowerCase();
-        if (!u) return false;
-        // 注册 / 创建账号等
-        if (/register|sign[\s_-]*up|create[\s_-]*account|registration|enrol/.test(u)) {
-            return false;
+    async _ensureAuthorSearchPage(options = {}) {
+        const maxNav = options.maxNav ?? 2;
+        const waitMs = options.waitMs ?? 45000;
+        const start = Date.now();
+        let navCount = 0;
+
+        while (Date.now() - start < waitMs && this.state.isRunning) {
+            if (!this.page || this.page.isClosed()) {
+                throw new Error('浏览器窗口已关闭');
+            }
+            await this._closeCookiePopup();
+            // 跨境确认等遮罩也会挡住表单
+            try {
+                const content = await this.page.content();
+                if (content.includes('Cross Border Personal Data Transfer Acknowledgement')) {
+                    this.logger.info('检测到跨境确认页，尝试处理...');
+                    await this._waitForCrossBorderAcknowledgement(60000);
+                }
+            } catch (e) { /* ignore */ }
+
+            if (await this._isOnAuthorSearchReady()) {
+                return true;
+            }
+
+            const url = this.page.url();
+            const onAuthorSearch = /\/author\/author-search/i.test(url);
+            if (!onAuthorSearch && navCount < maxNav) {
+                navCount++;
+                this.logger.info(`导航到作者搜索页 (${navCount}/${maxNav})...`);
+                try {
+                    await this.page.goto(this.searchConfig.TARGET_URL, {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 60000
+                    });
+                    await this.safeDelay(2000, 3500);
+                } catch (navErr) {
+                    this.logger.warn(`导航作者搜索页失败: ${navErr.message}`);
+                }
+                continue;
+            }
+
+            if (onAuthorSearch) {
+                // 已在目标 URL，尝试点侧栏/顶栏「Author Search」或刷新一次
+                const opened = await this._tryClickAuthorSearchNav();
+                if (!opened && navCount < maxNav + 1) {
+                    navCount++;
+                    this.logger.info('作者搜索页未渲染出表单，尝试刷新...');
+                    await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+                    await this.safeDelay(2500, 4000);
+                }
+            }
+
+            this.logger.info('已过登录门，等待作者搜索页加载...');
+            await this.safeDelay(3000, 4000);
         }
-        // 仍在 Clarivate 登录入口
-        if (u.includes('access.clarivate.com') && u.includes('login')) {
-            return false;
-        }
-        if (u.includes('/login') && !u.includes('webofscience')) {
-            return false;
-        }
-        // 已进入 Web of Science 作者相关站
-        if (u.includes('webofscience') && (u.includes('/wos/author') || u.includes('author-search'))) {
-            return true;
-        }
-        if (u.includes('webofscience.clarivate') && !u.includes('login')) {
-            return true;
+        return await this._isOnAuthorSearchReady();
+    }
+
+    async _tryClickAuthorSearchNav() {
+        const candidates = [
+            'a[href*="author-search"]',
+            'a:has-text("Author Search")',
+            'a:has-text("作者检索")',
+            'button:has-text("Author Search")',
+            '[data-ta*="author-search"]'
+        ];
+        for (const sel of candidates) {
+            try {
+                const link = this.page.locator(sel).first();
+                if (await link.isVisible({ timeout: 800 }).catch(() => false)) {
+                    this.logger.info(`点击导航进入作者搜索: ${sel}`);
+                    await humanClick(this.page, link);
+                    await this.safeDelay(2000, 3000);
+                    return true;
+                }
+            } catch (e) { /* try next */ }
         }
         return false;
+    }
+
+    /**
+     * 严格判断是否为「已登录后的 WoS」地址（排除注册页）
+     * 用于等待登录跳转；真正开搜前仍须 _isOnAuthorSearchReady
+     */
+    _isAuthenticatedWosUrl(url) {
+        return this._isPastLoginGate(url);
     }
 
     /**
@@ -517,14 +668,23 @@ class WosAuthorCrawler extends BaseCrawler {
                         await this._captureCredentialsFromForm();
                     }
 
-                    if (this._isAuthenticatedWosUrl(url) || await this._isOnAuthorSearchReady()) {
+                    if (this._isPastLoginGate(url) || await this._isOnAuthorSearchReady()) {
                         // 若跳转前没抓到密码，再试一次（可能还在 SPA 过渡）
                         if (!this.credentials.password) {
                             await this._captureCredentialsFromForm();
                         }
-                        this.logger.info('检测到用户已手动登录成功');
-                        this._persistCredentialsIfNeeded();
-                        return;
+                        // 过了登录门：有限次导航 + 等表单，避免每 2 秒盲刷 goto
+                        const ready = await this._ensureAuthorSearchPage({ maxNav: 2, waitMs: 20000 });
+                        if (ready) {
+                            this.logger.info('检测到用户已手动登录成功（作者搜索页就绪）');
+                            this._persistCredentialsIfNeeded();
+                            return;
+                        }
+                        this.logger.warn(
+                            '仍未检测到作者搜索表单。请在浏览器中打开 Author Search / 作者检索，并关闭 Cookie/确认弹窗'
+                        );
+                        await this.safeDelay(4000, 5000);
+                        continue;
                     }
 
                     // 点到注册页：明确提示，不要当成已登录
@@ -582,15 +742,32 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     /**
-     * 关闭 Cookie 弹窗
+     * 关闭 Cookie 弹窗（接受/关闭均可，避免挡住搜索表单）
      */
     async _closeCookiePopup() {
         try {
-            const closeButton = await this.page.$('#onetrust-close-btn-container button.onetrust-close-btn-handler');
-            if (closeButton && await closeButton.isVisible()) {
-                this.logger.info('检测到 Cookie 弹窗，正在关闭...');
-                await humanClick(this.page, closeButton);
-                await this.safeDelay(1000, 1000);
+            if (!this.page || this.page.isClosed()) return;
+            const selectors = [
+                '#onetrust-accept-btn-handler',
+                '#onetrust-close-btn-container button.onetrust-close-btn-handler',
+                'button.onetrust-close-btn-handler',
+                'button:has-text("Accept all")',
+                'button:has-text("Accept All")',
+                'button:has-text("Agree")',
+                'button:has-text("同意")',
+                'button:has-text("接受全部")'
+            ];
+            for (const sel of selectors) {
+                const btn = this.page.locator(sel).first();
+                if (await btn.isVisible({ timeout: 400 }).catch(() => false)) {
+                    this.logger.info(`检测到 Cookie 弹窗，正在处理: ${sel}`);
+                    const clicked = await humanClick(this.page, btn);
+                    if (!clicked) {
+                        await btn.click({ timeout: 3000 }).catch(() => {});
+                    }
+                    await this.safeDelay(800, 1200);
+                    break;
+                }
             }
         } catch (error) {
             this.logger.warn(`关闭 Cookie 弹窗失败: ${error.message}`);
@@ -795,9 +972,12 @@ class WosAuthorCrawler extends BaseCrawler {
                 Math.round((i / authors.length) * 60) + 30,
                 `处理第 ${i + 1}/${authors.length} 个作者：${author.familyName} ${author.givenName}`
             );
-            // 等待表单加载
-            await this.page.waitForSelector('#snSearchType', {timeout: 15000});
-            this.logger.info('已找到作者搜索表单 #snSearchType');
+            // 等待表单加载（兼容选择器变化，不再死等单一 #snSearchType）
+            const formReady = await this._ensureAuthorSearchPage({ maxNav: 1, waitMs: 25000 });
+            if (!formReady) {
+                throw new Error('作者搜索表单未加载完成（可能被 Cookie/验证弹窗挡住）');
+            }
+            this.logger.info('作者搜索表单已就绪');
             try {
                 const result = await this._searchSingleAuthor(author);
                 results.push(result);

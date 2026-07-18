@@ -37,12 +37,11 @@ function createGoogleCrawlerFacade() {
             return crawler.getState();
         },
 
-        // 重置爬虫内部状态（先关常驻浏览器，再丢弃实例）
+        // 重置爬虫内部状态（浏览器常驻最小化，不关闭）
         resetState() {
             if (crawlerInstance) {
-                Promise.resolve(crawlerInstance.cleanup({ force: true })).catch(() => {});
+                crawlerInstance.resetState();
             }
-            crawlerInstance = null;
         },
 
         // 重启爬虫

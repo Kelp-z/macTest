@@ -1,5 +1,6 @@
 // core/base-crawler.js
 const BrowserManager = require('../infrastructure/browser-manager');
+const { getSharedBrowserPool } = require('../infrastructure/shared-browser-pool');
 const ExcelExporter = require('../infrastructure/excel-exporter');
 const ErrorHandler = require('../infrastructure/error-handler');
 const Logger = require('../infrastructure/logger');
@@ -28,6 +29,8 @@ class BaseCrawler {
         // 任务相关信息
         this.taskId = null;
         this.taskType = null;
+        /** 是否使用引擎级共享浏览器（单窗口多标签） */
+        this._usesSharedBrowser = true;
     }
     /**
      * 生成任务ID和任务类型
@@ -166,21 +169,42 @@ class BaseCrawler {
         });
     }
 
-    async initBrowser(){
-        // 复用已最小化的浏览器，避免每任务开关闪烁
-        if (this._isBrowserAlive()) {
-            this.logger.info('复用常驻浏览器（保持最小化）');
-            await this.browserManager.hideWindow(this.page, this.browser);
-            this._setupBrowserCloseListener();
-            return;
-        }
+    /** 共享浏览器站点 key（google / wos / scopus…） */
+    _getBrowserSiteKey() {
+        return getSharedBrowserPool().resolveSiteKey(this.crawlerType);
+    }
 
-        this.browser = await this.browserManager.launch(this.configManager.getBrowserOptions());
-        const {page,context} = await this.browserManager.createPage(this.browser);
-        this.page = page;
+    /** 站点首页；null 时由 SharedBrowserPool 使用默认首页 */
+    _getBrowserHomeUrl() {
+        return null;
+    }
+
+    /**
+     * 初始化/附着到共享浏览器中的站点标签
+     */
+    async initBrowser() {
+        const pool = getSharedBrowserPool();
+        const siteKey = this._getBrowserSiteKey();
+        const homeUrl = this._getBrowserHomeUrl();
+        const browserOptions = this.configManager.getBrowserOptions();
+
+        const { browser, context, page, reused } = await pool.getOrCreateTab(
+            siteKey,
+            homeUrl,
+            browserOptions
+        );
+        this.browser = browser;
         this.context = context;
-        // 默认最小化到后台，避免检索时弹出窗口打断用户
-        await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        this.page = page;
+        this._usesSharedBrowser = true;
+
+        if (reused) {
+            this.logger.info(`复用共享浏览器标签 [${siteKey}]（保持最小化）`);
+            await pool.hide();
+        } else {
+            this.logger.info(`已在共享浏览器中打开标签 [${siteKey}]`);
+            await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        }
         this._setupBrowserCloseListener();
     }
 
@@ -210,8 +234,9 @@ class BaseCrawler {
         }
 
         try {
-            // 检查浏览器是否还连着
-            if (this.browser.isConnected && this.browser.isConnected()) {
+            if (this._usesSharedBrowser) {
+                await getSharedBrowserPool().shutdown();
+            } else if (this.browser.isConnected && this.browser.isConnected()) {
                 await this.browserManager.close(this.browser);
             } else if (this.browser._persistentContext) {
                 await this.browserManager.close(this.browser);
@@ -221,7 +246,6 @@ class BaseCrawler {
         } catch (error) {
             this.logger.warn(`清理浏览器时出错: ${error.message}`);
         } finally {
-            // 清空引用，避免后续代码误用
             this.browser = null;
             this.page = null;
             this.context = null;

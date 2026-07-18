@@ -609,10 +609,6 @@ class ExcelExporter {
 
         return filePath;
     }
-
-
-
-
 }
 
 module.exports = ExcelExporter;

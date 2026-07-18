@@ -7,6 +7,7 @@ function registerCrawlerRoutes({
                                    facade,
                                    io,
                                    session,
+                                   registry = null,
                                    validateInput,
                                    inputFieldName = 'keywords',
                                    startSuccessMsg = '检索已启动',
@@ -22,6 +23,15 @@ function registerCrawlerRoutes({
         const state = await facade.getState();
         if (state.isRunning) {
             return res.status(409).json({code: 409, msg: `${facade.capabilities.source}爬虫正在运行中`})
+        }
+
+        // 切换任务类型时关掉其它爬虫常驻浏览器，避免 WoS/Google 多窗口并存
+        if (registry && typeof registry.releaseOtherFacades === 'function') {
+            try {
+                await registry.releaseOtherFacades(facade.capabilities.source);
+            } catch (e) {
+                console.warn(`释放其它爬虫浏览器失败: ${e.message}`);
+            }
         }
 
         const taskId = `${facade.capabilities.source}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;

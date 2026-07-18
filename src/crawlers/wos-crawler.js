@@ -38,6 +38,10 @@ class WosCrawler extends BaseCrawler {
         this.currentLinkIndex = -1;    // 当前使用的链接索引
         this.middlePage = null;        // 中间页引用
     }
+
+    _getBrowserHomeUrl() {
+        return this.searchConfig.BASE_URL || 'https://www.2447.net/';
+    }
     async beforeCrawl() {
         await super.beforeCrawl();
         this.logger.info('WoS 收录检测爬虫初始化完成');
