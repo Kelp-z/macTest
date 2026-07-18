@@ -2471,8 +2471,9 @@
                         failReasonURL = res.data.error.screenshotPath;
                     }
 
-                    // 只要后端返回 isRunning = false，就认为任务已完成
-                    if (!res.data.isRunning) {
+                    // 只要后端返回 isRunning = false 且 isStopping = false，才认为任务已完成
+                    // isStopping=true 说明爬虫正在清理中，等下一轮轮询再判断
+                    if (!res.data.isRunning && !res.data.isStopping) {
                         // 先停掉本轮轮询，避免与自动接取的新任务抢状态
                         clearInterval(pollTimer);
                         pollTimer = null;

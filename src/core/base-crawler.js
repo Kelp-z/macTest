@@ -21,6 +21,7 @@ class BaseCrawler {
         this.interventionSession = createInterventionSession(300000);
         this.state = {
             isRunning: false,
+            isStopping: false,
             process: 0,
             log: [],
             error: null,
@@ -275,16 +276,28 @@ class BaseCrawler {
     async stop(){
         this.logger.info('收到停止请求');
 
-        // 先设置运行状态为 false，让正在执行的操作能检测到
+        // 标记正在停止，防止前端轮询在 cleanup 期间误判为任务完成
+        this.state.isStopping = true;
+
+        // 设置运行状态为 false，让正在执行的操作能检测到
         this.state.isRunning = false;
 
         // 取消所有待处理的干预会话（验证码、手动操作等）
         if (this.interventionSession) {
             this.interventionSession.cancelSource(this.crawlerType, '用户停止爬虫');
         }
-        // 停止时强制关闭常驻浏览器（勿先单独关 page，以免残留无页的 context）
-        await this.cleanup({ force: true });
 
+        try {
+            // 停止时强制关闭常驻浏览器（勿先单独关 page，以免残留无页的 context）
+            await this.cleanup({ force: true });
+        } catch (e) {
+            // cleanup 过程中的异常也记录到 state.error，确保前端不会误报成功
+            if (!this.state.error) {
+                this.state.error = { message: e.message, code: 'BROWSER_CLOSED_ERROR' };
+            }
+        }
+
+        this.state.isStopping = false;
         this.logger.info('爬虫已停止');
     }
     /**
@@ -306,6 +319,7 @@ class BaseCrawler {
         // 重置基础状态
         this.state = {
             isRunning: false,
+            isStopping: false,
             progress: 0,
             log: [],
             error: null,
