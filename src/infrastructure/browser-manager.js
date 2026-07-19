@@ -1095,7 +1095,7 @@ while ($true) {
         if (options.headless || !options.startMinimized) {
             return;
         }
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 5000));
         await this.hideWindow(page, browser);
         console.log(`[BrowserManager] 浏览器已在后台运行（模式: ${options.hideMode || 'offscreen'}）`);
     }
