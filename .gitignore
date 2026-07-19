@@ -116,6 +116,9 @@ dist
 .pnp.*
 
 browsers/
+browser-profiles/
 captcha_temp/
 crawler/src/main/resources/output/
 output
+screenshots/
+.idea/
