@@ -1046,23 +1046,34 @@ class GoogleScholarCrawler extends BaseCrawler {
         let chosen = candidates[0];
         let chosenBy = 'first';
 
-        // 阶段①：请求原文 vs 第 1 条 —— 达标则直接采用，不再被坏关键词抢走
-        if (this.searchConfig.MATCH_REQUEST_FIRST !== false &&
-            candidates[0].requestSimilarity >= threshold) {
-            chosen = candidates[0];
-            chosenBy = 'request-first';
-            this.logger.info(
-                `第 1 条与请求数据匹配（${candidates[0].requestSimilarity.toFixed(3)} ≥ ${threshold}），直接采用，跳过关键词优选`
+        // 阶段①：在前几条中按「请求原文匹配度」优选（同分取靠前，尊重 Google 排名），
+        //         而不是只看第 1 条，避免"revisited/survey"类标题抢走精确匹配（1.0）的位置
+        let useKeywordFallback = false;
+        if (this.searchConfig.MATCH_REQUEST_FIRST !== false) {
+            const bestByRequest = candidates.reduce(
+                (a, b) => (b.requestSimilarity > a.requestSimilarity ? b : a),
+                candidates[0]
             );
-        } else {
-            // 阶段②：退回关键词相似度逻辑
-            if (this.searchConfig.MATCH_REQUEST_FIRST !== false) {
+            if (bestByRequest.requestSimilarity >= threshold) {
+                chosen = bestByRequest;
+                chosenBy = bestByRequest.index === 0 ? 'request-first' : 'request-best';
                 this.logger.info(
-                    `第 1 条与请求数据不够匹配（${candidates[0].requestSimilarity.toFixed(3)} < ${threshold}），` +
+                    `前 ${candidates.length} 条中请求匹配最高为第 ${bestByRequest.index + 1} 条` +
+                    `（${bestByRequest.requestSimilarity.toFixed(3)} ≥ ${threshold}），采用之`
+                );
+            } else {
+                this.logger.info(
+                    `前 ${candidates.length} 条请求匹配均不达标（最高 ${bestByRequest.requestSimilarity.toFixed(3)} < ${threshold}），` +
                     `改用关键词相似度优选`
                 );
+                useKeywordFallback = true;
             }
+        } else {
+            useKeywordFallback = true;
+        }
 
+        // 阶段②：退回关键词相似度逻辑
+        if (useKeywordFallback) {
             const bestByKeyword = candidates.reduce(
                 (a, b) => (b.keywordSimilarity > a.keywordSimilarity ? b : a),
                 candidates[0]
