@@ -930,6 +930,7 @@ class GoogleScholarCrawler extends BaseCrawler {
     _buildSearchQuery(keyword) {
         const text = String(keyword || '').trim();
         if (!text) return text;
+
         if (!this.searchConfig.QUOTED_TITLE_SEARCH) return text;
         // 已是引号包裹则不再重复加
         if ((text.startsWith('"') && text.endsWith('"')) ||
@@ -1045,6 +1046,10 @@ class GoogleScholarCrawler extends BaseCrawler {
         for (let i = 0; i < maxCheck; i++) {
             const result = searchResults.nth(i);
             try {
+                // 在 _extractTitle 剥除前缀前，检测是否为引用条目
+                const rawTitleLocator = result.locator('h3.gs_rt').first();
+                const rawTitleText = await rawTitleLocator.textContent().catch(() => '');
+                const isCitation = /^\s*\[(citation|引用)\]/i.test(rawTitleText);
                 const title = await this._extractTitle(result);
                 const authors = await this._extractAuthors(result);
                 const requestSimilarity = this._matchAgainstRequest(requestTitle, requestAuthors, title, authors);
@@ -1054,6 +1059,7 @@ class GoogleScholarCrawler extends BaseCrawler {
                     result,
                     title,
                     authors,
+                    isCitation,
                     requestSimilarity,
                     keywordSimilarity,
                     // 兼容旧字段名
@@ -1101,7 +1107,7 @@ class GoogleScholarCrawler extends BaseCrawler {
             if (this.searchConfig.PREFER_FIRST_RESULT) {
                 chosen = candidates[0];
                 if (chosen.keywordSimilarity >= threshold ||
-                    chosen.keywordSimilarity >= bestByKeyword.keywordSimilarity - 0.08) {
+                    chosen.keywordSimilarity >= bestByKeyword.keywordSimilarity - 0.04) {
                     chosenBy = 'keyword-prefer-first';
                     if (chosen.index !== bestByKeyword.index) {
                         this.logger.info(
@@ -1138,6 +1144,12 @@ class GoogleScholarCrawler extends BaseCrawler {
             requestTitle || keyword,
             isMatch
         );
+
+        // 引用条目标记：Google Scholar 的 [CITATION] 结果原文链接可能失效
+        if (chosen.isCitation) {
+            bestMatch.remark += ' [CITATION引用]';
+            this.logger.warn(`结果 #${chosen.index + 1} 是引用条目，原文链接可能失效`);
+        }
 
         if (this.searchConfig.VISIT_CITATION_ENABLED) {
             this.logger.info(`正在下载 EndNote 文件（结果 #${chosen.index + 1}）...`);
@@ -1206,6 +1218,18 @@ class GoogleScholarCrawler extends BaseCrawler {
         const citations = await this._extractCitations(result);
         const citationLink = await this._extractCitationLink(result);
 
+        // 提取论文原文链接（用于后端验证引用条目链接是否有效）
+        let paperUrl = '';
+        try {
+            const linkEl = result.locator('h3.gs_rt a').first();
+            if (await linkEl.isVisible({ timeout: 2000 }).catch(() => false)) {
+                const href = await linkEl.getAttribute('href');
+                if (href && !href.startsWith('javascript:')) paperUrl = href;
+            }
+        } catch (e) {
+            this.logger.debug('提取论文URL失败: ' + e.message);
+        }
+
         const searchTime = new Date().toLocaleString('zh-CN', {
             year: 'numeric', month: '2-digit', day: '2-digit',
             hour: '2-digit', minute: '2-digit', second: '2-digit'
@@ -1222,7 +1246,7 @@ class GoogleScholarCrawler extends BaseCrawler {
             pages: '',
             abstract: abstractText,
             doi: '',
-            url: '',
+            url: paperUrl,
             publicationType: 'Unknown',
             publisher: '',
             filePath: '',
@@ -1682,6 +1706,8 @@ class GoogleScholarCrawler extends BaseCrawler {
                     let title = await titleElement.textContent();
                     title = title.replace(/^\[PDF\]\s*/, '')
                         .replace(/^\[HTML\]\s*/, '')
+                        .replace(/^\[CITATION\]\s*/i, '')
+                        .replace(/^\[引用\]\s*/, '')
                         .trim();
                     if (title) return title;
                 }
@@ -1846,7 +1872,7 @@ class GoogleScholarCrawler extends BaseCrawler {
     }
 
     /**
-     * 计算标题相似度（归一化后的词重叠 + 前缀/包含关系）
+     * 计算标题相似度
      */
     _calculateSimilarity(keyword, title, authors) {
         const keywordNorm = this._normalizeTitleText(keyword);
@@ -1854,17 +1880,40 @@ class GoogleScholarCrawler extends BaseCrawler {
 
         if (!keywordNorm || !titleNorm) return 0;
 
-        // 完全包含 / 前缀匹配（Scholar 常截断标题）
-        if (titleNorm === keywordNorm ||
-            titleNorm.includes(keywordNorm) ||
-            keywordNorm.includes(titleNorm)) {
-            return 1.0;
-        }
-
-        const keywordWords = keywordNorm.split(' ').filter(w => w.length > 1);
-        const titleWords = new Set(titleNorm.split(' ').filter(w => w.length > 1));
+        // 第一步：过滤停用词（统一数据源，后续所有比较都基于过滤后的词）
+        const STOP_WORDS = new Set([
+            'the', 'a', 'an', 'of', 'in', 'for', 'and', 'to', 'with', 'on',
+            'by', 'from', 'is', 'as', 'at', 'or', 'its', 'their'
+        ]);
+        const filterWords = (text) => text.split(' ').filter(w => w.length > 1 && !STOP_WORDS.has(w));
+        let keywordWords = filterWords(keywordNorm);
+        let titleWordsArr = filterWords(titleNorm);
+        // 过滤后无有效词时回退到不过滤
+        if (keywordWords.length === 0) keywordWords = keywordNorm.split(' ').filter(w => w.length > 1);
+        if (titleWordsArr.length === 0) titleWordsArr = titleNorm.split(' ').filter(w => w.length > 1);
         if (keywordWords.length === 0) return 0;
 
+        const titleWords = new Set(titleWordsArr);
+        const keywordWordsSet = new Set(keywordWords);
+
+        // 第二步：词级别包含检查（基于过滤后的词数组，而非原始字符串）
+        const kwIsSubset = keywordWords.every(w => titleWords.has(w));
+        const titleIsSubset = titleWordsArr.every(w => keywordWordsSet.has(w));
+
+        if (kwIsSubset && titleIsSubset) {
+            // 词集合完全相同（允许词数不同，如停用词差异）
+            return 1.0;
+        }
+        if (titleIsSubset) {
+            // 结果的词全部在关键词中（Scholar截断标题），长度越接近越可信
+            return 0.8 + 0.2 * (titleWordsArr.length / keywordWords.length);
+        }
+        if (kwIsSubset) {
+            // 关键词的词全部在结果中（关键词只是标题的一部分）
+            return 0.6 + 0.3 * (keywordWords.length / titleWordsArr.length);
+        }
+
+        // 第三步：词袋重叠 + Jaccard
         let matchCount = 0;
         for (const word of keywordWords) {
             if (titleWords.has(word)) {
@@ -1874,9 +1923,8 @@ class GoogleScholarCrawler extends BaseCrawler {
         const overlap = matchCount / keywordWords.length;
 
         // Jaccard 作为补充，避免短标题偶然高分
-        const titleWordArr = [...titleWords];
         const intersection = keywordWords.filter(w => titleWords.has(w)).length;
-        const union = new Set([...keywordWords, ...titleWordArr]).size || 1;
+        const union = new Set([...keywordWords, ...titleWordsArr]).size || 1;
         const jaccard = intersection / union;
 
         return Math.max(overlap, jaccard);
