@@ -1365,8 +1365,10 @@ class WosAuthorCrawler extends BaseCrawler {
     async extractData(searchResults) {
         this.logger.info('开始整理提取的数据');
 
-        const successList = this.authorsResultList.filter(item => item.hasResults === true);
-        const failedList = this.authorsResultList.filter(item => item.hasResults === false || item.remark);
+        // 有 remark 的才是真正的检索失败（服务器错误、超时等）
+        const failedList = this.authorsResultList.filter(item => item.remark);
+        // 其余都是有效结果（包括搜到作者 和 确认 WOS 无此人）
+        const successList = this.authorsResultList.filter(item => !item.remark);
 
         return {
             successList: successList,
