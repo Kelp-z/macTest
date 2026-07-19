@@ -427,9 +427,14 @@ app.post('/api/user-intervention/complete', (req, res) => {
 // 将检索用 Chromium 从屏外拉回可见区域（验证码弹窗 / 用户点任务栏看不到时）
 app.post('/api/browser/show', async (req, res) => {
     try {
-        const BrowserManager = require('./src/infrastructure/browser-manager');
-        const bm = new BrowserManager();
-        await bm.forceShowChromiumWindows();
+        const sharedBrowserSession = require('./src/infrastructure/shared-browser-session');
+        if (sharedBrowserSession.isEnabled()) {
+            await sharedBrowserSession.forceShow();
+        } else {
+            const BrowserManager = require('./src/infrastructure/browser-manager');
+            const bm = new BrowserManager();
+            await bm.forceShowChromiumWindows();
+        }
         res.json({ code: 200, msg: '浏览器已移回屏幕内' });
     } catch (e) {
         console.warn('[api/browser/show] 失败:', e.message);
@@ -575,6 +580,14 @@ async function cleanupAllCrawlers() {
         } catch (err) {
             console.error(` 清理 ${source} 失败:`, err.message);
         }
+    }
+
+    // 关闭共享 Chromium（各 facade stop 可能只关了标签）
+    try {
+        const sharedBrowserSession = require('./src/infrastructure/shared-browser-session');
+        await sharedBrowserSession.closeAll();
+    } catch (e) {
+        console.warn('关闭共享浏览器失败:', e.message);
     }
 
     // 关闭 Socket.IO

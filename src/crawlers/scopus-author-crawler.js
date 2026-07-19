@@ -41,22 +41,11 @@ class ScopusAuthorCrawler extends BaseCrawler {
     }
 
     /*
-    * 初始化浏览器
+    * 初始化浏览器（共享 Chromium + Scopus Author 标签）
     */
     async initBrowser() {
-        if (this._isBrowserAlive()) {
-            this.logger.info('复用 Scopus Author 常驻浏览器（保持最小化）');
-            await this.browserManager.hideWindow(this.page, this.browser);
-            this._setupBrowserCloseListener();
-            return;
-        }
-        this.browser = await this.browserManager.launch(this.configManager.getBrowserOptions());
-        const {page, context} = await this.browserManager.createPage(this.browser);
-        this.page = page;
-        this.context = context;
-        await this.browserManager.applyInitialVisibility(this.page, this.browser);
-        this._setupBrowserCloseListener();
-        this.logger.info('浏览器已初始化');
+        await super.initBrowser();
+        this.logger.info('浏览器已初始化（共享模式）');
     }
     /**
      * 停止爬虫

@@ -144,6 +144,8 @@ class ConfigManager {
             showOnIntervention: browser.showOnIntervention !== false,
             // 任务结束后保持浏览器最小化不关闭，下一任务直接复用（避免反复开关闪烁）
             keepAlive: browser.keepAlive !== false,
+            // 全进程共用一个 Chromium，按任务类型分标签（切换任务不弹窗）
+            shared: browser.shared !== false,
             // 以下两项会显著增加 Google 风控，默认关闭
             disableSecurityArgs: browser.disableSecurityArgs === true,
             deterministicRendering: browser.deterministicRendering === true,

@@ -83,33 +83,11 @@ class GoogleScholarAuthorCrawler extends BaseCrawler {
         this.logger.info('Google Scholar 作者爬虫状态已重置');
     }
     /**
-     * 初始化浏览器
+     * 初始化浏览器（共享 Chromium + 作者检索标签）
      */
     async initBrowser() {
-        if (this._isBrowserAlive()) {
-            this.logger.info('复用 Google Scholar Author 常驻浏览器（保持最小化）');
-            await this.browserManager.hideWindow(this.page, this.browser);
-            this._setupBrowserCloseListener();
-            return;
-        }
-
-        const browserOptions = this.configManager.getBrowserOptions();
-        if (this.searchConfig.PERSIST_PROFILE) {
-            const profileDir = this.browserManager.getPersistentUserDataDir('google-scholar-author');
-            const { browser, context, page } = await this.browserManager.launchPersistent(profileDir, browserOptions);
-            this.browser = browser;
-            this.context = context;
-            this.page = page;
-            this.logger.info(`已启用 Google Scholar Author 持久化配置: ${profileDir}`);
-        } else {
-            this.browser = await this.browserManager.launch(browserOptions);
-            const { page, context } = await this.browserManager.createPage(this.browser);
-            this.page = page;
-            this.context = context;
-        }
-        await this.browserManager.applyInitialVisibility(this.page, this.browser);
-        this._setupBrowserCloseListener();
-        this.logger.info('浏览器已初始化');
+        await super.initBrowser();
+        this.logger.info('浏览器已初始化（共享模式）');
     }
 
     /**

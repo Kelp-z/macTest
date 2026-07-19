@@ -9,6 +9,7 @@
     "hideMode": "minimized",
     "showOnIntervention": true,
     "keepAlive": true,
+    "shared": true,
     "disableSecurityArgs": false,
     "deterministicRendering": false
   },

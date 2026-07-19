@@ -122,7 +122,7 @@ class GoogleScholarCrawler extends BaseCrawler {
         this.logger.info('Google Scholar 爬虫状态已重置');
     }
     /**
-     * 初始化浏览器（重写父类方法）
+     * 初始化浏览器（走共享 Chromium + 本任务标签页；EndNote 目录仍按任务准备）
      */
     async initBrowser() {
         // 确保 EndNote 下载目录存在
@@ -131,44 +131,8 @@ class GoogleScholarCrawler extends BaseCrawler {
             fs.mkdirSync(endNoteDir, {recursive: true});
         }
 
-        // 复用常驻浏览器，避免每开任务闪一下再缩小
-        if (this._isBrowserAlive()) {
-            this.logger.info('复用 Google Scholar 常驻浏览器（保持最小化）');
-            await this.browserManager.hideWindow(this.page, this.browser);
-            this._setupBrowserCloseListener();
-            return;
-        }
-
-        const browserOptions = this.configManager.getBrowserOptions();
-
-        if (this.searchConfig.PERSIST_PROFILE) {
-            const profileDir = this.browserManager.getPersistentUserDataDir('google-scholar');
-            // 下载目录固定到 profile 下，任务内再拷贝到 currentOutputDir
-            const stickyDownloadDir = path.join(profileDir, 'downloads');
-            if (!fs.existsSync(stickyDownloadDir)) {
-                fs.mkdirSync(stickyDownloadDir, { recursive: true });
-            }
-            const { browser, context, page } = await this.browserManager.launchPersistent(profileDir, {
-                ...browserOptions,
-                downloadsPath: stickyDownloadDir
-            });
-            this.browser = browser;
-            this.context = context;
-            this.page = page;
-            this.logger.info(`已启用 Google Scholar 持久化配置: ${profileDir}`);
-        } else {
-            this.browser = await this.browserManager.launch(browserOptions);
-            const {page, context} = await this.browserManager.createPage(this.browser, {
-                downloadsPath: endNoteDir
-            });
-            this.page = page;
-            this.context = context;
-        }
-
-        await this.browserManager.applyInitialVisibility(this.page, this.browser);
-        this._setupBrowserCloseListener();
-
-        this.logger.info(`浏览器已初始化，EndNote 下载目录: ${endNoteDir}`);
+        await super.initBrowser();
+        this.logger.info(`浏览器已初始化（共享模式），EndNote 下载目录: ${endNoteDir}`);
     }
 
 

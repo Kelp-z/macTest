@@ -1,5 +1,6 @@
 // core/base-crawler.js
 const BrowserManager = require('../infrastructure/browser-manager');
+const sharedBrowserSession = require('../infrastructure/shared-browser-session');
 const ExcelExporter = require('../infrastructure/excel-exporter');
 const ErrorHandler = require('../infrastructure/error-handler');
 const Logger = require('../infrastructure/logger');
@@ -13,6 +14,7 @@ class BaseCrawler {
         this.configManager = ConfigManager;
         this.logger = new Logger(crawlerType);
         this.browserManager = new BrowserManager();
+        this.sharedBrowser = sharedBrowserSession;
         this.errorHandler = new ErrorHandler();
         this.excelExporter = new ExcelExporter();
 
@@ -29,6 +31,7 @@ class BaseCrawler {
         // 任务相关信息
         this.taskId = null;
         this.taskType = null;
+        this._sharedCloseUnsub = null;
     }
     /**
      * 生成任务ID和任务类型
@@ -102,9 +105,12 @@ class BaseCrawler {
             // 清理会话
             this.interventionSession.cancelSource(this.crawlerType, '爬虫执行结束');
             // keepAlive 时仅缩回后台，不关闭浏览器；停止/重置时再强制关闭
-            try {
-                this.browserManager.removeBrowserCloseListener(this.browser);
-            } catch (e) {}
+            // 共享模式下不要卸掉 SharedBrowserSession 的 disconnected 监听
+            if (!this.sharedBrowser.isEnabled()) {
+                try {
+                    this.browserManager.removeBrowserCloseListener(this.browser);
+                } catch (e) {}
+            }
             await this.cleanup({ force: false });
         }
     }
@@ -148,6 +154,29 @@ class BaseCrawler {
     }
 
     _setupBrowserCloseListener() {
+        if (this.sharedBrowser.isEnabled()) {
+            if (this._sharedCloseUnsub) {
+                try { this._sharedCloseUnsub(); } catch (e) {}
+            }
+            this._sharedCloseUnsub = this.sharedBrowser.onBrowserClosed((closeInfo) => {
+                this.logger.error(`共享浏览器异常关闭: ${closeInfo.message}`);
+                if (!this.state.error) {
+                    this.state.error = this.errorHandler.format(
+                        new Error(closeInfo.message),
+                        this.crawlerType
+                    );
+                }
+                this.state.isRunning = false;
+                if (this.interventionSession) {
+                    this.interventionSession.cancelSource(this.crawlerType, '浏览器异常关闭');
+                }
+                this.page = null;
+                this.context = null;
+                this.browser = null;
+            });
+            return;
+        }
+
         if (!this.browser) return;
         this.browserManager.removeBrowserCloseListener(this.browser);
         this.browserManager.setupBrowserCloseListener(this.browser, (closeInfo) => {
@@ -180,7 +209,19 @@ class BaseCrawler {
     }
 
     async initBrowser(){
-        // 复用已最小化的浏览器，避免每任务开关闪烁
+        // 默认：全进程共用一个 Chromium，按 crawlerType 分标签；切换任务不弹窗
+        if (this.sharedBrowser.isEnabled()) {
+            const { browser, context, page } = await this.sharedBrowser.acquire(this.crawlerType);
+            this.browser = browser;
+            this.context = context;
+            this.page = page;
+            this._ensurePageCompat();
+            this._setupBrowserCloseListener();
+            this.logger.info(`已绑定共享浏览器标签「${this.crawlerType}」（后台运行，不弹窗）`);
+            return;
+        }
+
+        // 兼容：shared=false 时各爬虫独立浏览器
         if (this._isBrowserAlive()) {
             this.logger.info('复用常驻浏览器（保持最小化）');
             this._ensurePageCompat();
@@ -194,20 +235,49 @@ class BaseCrawler {
         this.page = page;
         this.context = context;
         this._ensurePageCompat();
-        // 默认最小化到后台，避免检索时弹出窗口打断用户
         await this.browserManager.applyInitialVisibility(this.page, this.browser);
         this._setupBrowserCloseListener();
     }
 
     /**
      * 清理浏览器
-     * @param {{force?: boolean}} options - force=true 时强制关闭（停止/重置/退出）
+     * @param {{force?: boolean, closeBrowser?: boolean}} options
+     *   force=true：关闭本任务类型标签（停止/重置）
+     *   closeBrowser=true：关闭整个共享 Chromium
      */
     async cleanup(options = {}){
         const force = options.force === true;
+        const closeBrowser = options.closeBrowser === true;
+
+        if (this.sharedBrowser.isEnabled()) {
+            try {
+                if (this.page && !this.page.isClosed()) {
+                    await this.browserManager.hideWindow(this.page, this.browser);
+                }
+            } catch (e) {
+                // 忽略
+            }
+
+            if (this._shouldKeepBrowserAlive() && !force && !closeBrowser) {
+                this.logger.info('keepAlive：共享浏览器保持最小化，标签页保留供下次复用');
+                await this.sharedBrowser.release(this.crawlerType, { force: false });
+                return;
+            }
+
+            await this.sharedBrowser.release(this.crawlerType, {
+                force: force || closeBrowser,
+                closeBrowser
+            });
+            if (force || closeBrowser) {
+                this.browser = null;
+                this.page = null;
+                this.context = null;
+            }
+            return;
+        }
+
         if (!this.browser) return;
 
-        // 先尽量缩回后台
         try {
             if (this.page && !this.page.isClosed()) {
                 await this.browserManager.hideWindow(this.page, this.browser);
@@ -225,7 +295,6 @@ class BaseCrawler {
         }
 
         try {
-            // 检查浏览器是否还连着
             if (this.browser.isConnected && this.browser.isConnected()) {
                 await this.browserManager.close(this.browser);
             } else if (this.browser._persistentContext) {
@@ -236,7 +305,6 @@ class BaseCrawler {
         } catch (error) {
             this.logger.warn(`清理浏览器时出错: ${error.message}`);
         } finally {
-            // 清空引用，避免后续代码误用
             this.browser = null;
             this.page = null;
             this.context = null;

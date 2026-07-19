@@ -43,7 +43,7 @@ class WosAuthorCrawler extends BaseCrawler {
         this.shouldStop = false;
         this.authorsResultList = [];
 
-        // 绑定当前终端；切换终端时强制关闭浏览器，避免 Clarivate 会话串号
+        // 绑定当前终端；切换终端时只重建本标签并清 Clarivate Cookie，不关掉共享浏览器
         const terminalId = String(
             this.crawlOptions?.terminalId ||
             this.crawlOptions?.terminalID ||
@@ -52,16 +52,28 @@ class WosAuthorCrawler extends BaseCrawler {
         this.terminalId = terminalId;
         if (this._boundTerminalId && terminalId && this._boundTerminalId !== terminalId) {
             this.logger.info(
-                `检测到终端切换 (${this._boundTerminalId} -> ${terminalId})，关闭浏览器会话以防串号`
+                `检测到终端切换 (${this._boundTerminalId} -> ${terminalId})，重建 WoS 作者标签以防串号`
             );
             try {
-                await this.cleanup({ force: true });
+                if (this.sharedBrowser.isEnabled()) {
+                    const { browser, context, page } = await this.sharedBrowser.recreatePage(this.crawlerType, {
+                        clearClarivateCookies: true
+                    });
+                    this.browser = browser;
+                    this.context = context;
+                    this.page = page;
+                } else {
+                    await this.cleanup({ force: true });
+                    this.page = null;
+                    this.context = null;
+                    this.browser = null;
+                }
             } catch (e) {
-                this.logger.warn(`切换终端时关闭浏览器失败: ${e.message}`);
+                this.logger.warn(`切换终端时重建标签失败: ${e.message}`);
+                this.page = null;
+                this.context = null;
+                this.browser = null;
             }
-            this.page = null;
-            this.context = null;
-            this.browser = null;
         }
         if (terminalId) {
             this._boundTerminalId = terminalId;
