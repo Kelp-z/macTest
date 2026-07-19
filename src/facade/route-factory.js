@@ -94,9 +94,17 @@ function registerCrawlerRoutes({
             taskType,
             generateExcel: req.body.generateExcel,
             outputDir: req.body.outputDir,
-            // 终端 ID，用于按终端隔离第三方账密 / 浏览器会话
+            // 终端 ID，用于浏览器会话隔离 / 账号池占用标记
             ...(req.body.terminalId || req.body.terminalID
                 ? { terminalId: String(req.body.terminalId || req.body.terminalID).trim() }
+                : {}),
+            // Spring 任务 ID（用于账号池 lease 关联）
+            ...(req.body.spmTaskId != null
+                ? { spmTaskId: String(req.body.spmTaskId) }
+                : {}),
+            // 登录 JWT，爬虫向 Spring 领取/释放账号池
+            ...(req.body.authToken
+                ? { authToken: String(req.body.authToken) }
                 : {}),
             ...(taskCaptchaDir ? { captchaDir: taskCaptchaDir } : {}),
             // 将定义在 callbacks 对象中的回调函数作为参数,动态地把对应的回调函数注册到任务参数中

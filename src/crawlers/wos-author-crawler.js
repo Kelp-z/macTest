@@ -3,11 +3,7 @@ const BaseCrawler = require('../core/base-crawler');
 const fs = require('fs');
 const path = require('path');
 const {humanClick, humanType} = require('../utils/playwright-utils');
-const {
-    getWosAuthorCredentials,
-    saveWosAuthorCredentials,
-    loadLegacyUserCredentials
-} = require('../infrastructure/user-credentials-store');
+const {leaseWosAccount, releaseWosAccount} = require('../infrastructure/wos-account-client');
 
 /**
  * WoS (Web of Science) 作者爬虫类
@@ -24,11 +20,14 @@ class WosAuthorCrawler extends BaseCrawler {
 
         };
 
-        // WoS 登录凭证（按终端 ID 隔离，启动任务时再加载）
+        // 从后端账号池领取的临时凭证（不落本地盘）
         this.credentials = {
             email: '',
             password: ''
         };
+        this.leasedAccountId = null;
+        this.authToken = '';
+        this.spmTaskId = '';
         this.terminalId = '';
         this._boundTerminalId = null;
 
@@ -78,10 +77,19 @@ class WosAuthorCrawler extends BaseCrawler {
             fs.mkdirSync(this.currentOutputDir, {recursive: true});
         }
         this.logger.info(`输出目录已创建: ${this.currentOutputDir}`);
+        this.authToken = String(this.crawlOptions?.authToken || '').trim();
+        this.spmTaskId = String(
+            this.crawlOptions?.spmTaskId ||
+            this.crawlOptions?.taskId ||
+            ''
+        ).trim();
         if (terminalId) {
-            this.logger.info(`当前终端: ${terminalId}（WoS 账密按终端隔离）`);
+            this.logger.info(`当前终端: ${terminalId}（WoS 账密从后端账号池领取）`);
         } else {
-            this.logger.warn('未传入 terminalId，无法按终端隔离账密');
+            this.logger.warn('未传入 terminalId');
+        }
+        if (!this.authToken) {
+            this.logger.warn('未传入 authToken，登录时将无法领取账号池凭证');
         }
     }
 
@@ -93,6 +101,7 @@ class WosAuthorCrawler extends BaseCrawler {
 
         // 设置 WoS 特有的停止标志
         this.shouldStop = true;
+        await this._releaseLeasedAccount('任务停止');
 
         // 调用父类的通用停止逻辑
         await super.stop();
@@ -105,11 +114,14 @@ class WosAuthorCrawler extends BaseCrawler {
      */
     resetState() {
         this.logger.info('重置 WoS 作者爬虫状态');
+        this._releaseLeasedAccount('重置状态').catch(() => {});
 
         // 重置 WoS 特有状态
         this.shouldStop = false;
         this.authorsResultList = [];
         this.currentOutputDir = null;
+        this.leasedAccountId = null;
+        this.credentials = { email: '', password: '' };
 
         // 调用父类的通用重置逻辑
         super.resetState();
@@ -119,17 +131,15 @@ class WosAuthorCrawler extends BaseCrawler {
 
     async login() {
         this.logger.info('正在准备 WoS 作者登录');
-        // 每次登录前从配置刷新凭证（上次手动登录可能已写入）
-        this._reloadCredentialsFromConfig();
 
-        // 若浏览器会话仍有效，直接进入搜索页，无需弹窗
+        // 若浏览器会话仍有效，直接进入搜索页（不占用账号池）
         try {
             await this.page.goto(this.searchConfig.TARGET_URL, {
                 waitUntil: 'domcontentloaded',
                 timeout: 60000
             });
             if (await this._isOnAuthorSearchReady()) {
-                this.logger.info('检测到有效登录会话，跳过登录与弹窗');
+                this.logger.info('检测到有效登录会话，跳过登录与领取账号');
                 await this._closeCookiePopup();
                 await this._handlePostLoginInterventions();
                 return;
@@ -138,28 +148,29 @@ class WosAuthorCrawler extends BaseCrawler {
             this.logger.info(`会话预检未通过，进入登录流程: ${e.message}`);
         }
 
+        // 从后端账号池领取空闲账号
+        await this._leaseAccountFromBackend();
+
         this.logger.info('正在访问 WoS 登录页面');
         await this.page.goto(this.searchConfig.LOGIN_URL, {
             waitUntil: 'domcontentloaded',
             timeout: 120000
         });
-        // 等待登录表单加载
         await this.page.waitForSelector('input[formcontrolname="email"]', {timeout: 15000});
         await this.page.waitForSelector('input[formcontrolname="password"]', {timeout: 15000});
 
         if (this.page.isClosed()) {
             throw new Error('浏览器窗口已关闭');
         }
-        // 检查是否有有效凭证：有则静默自动登录，不再弹窗
-        if (this.credentials.email && this.credentials.password) {
-            this.logger.info(
-                `使用当前终端(${this.terminalId || '未知'})已保存的 WoS 账密自动登录（不弹窗）`
-            );
+
+        this.logger.info(
+            `使用账号池账号自动登录（不弹窗）| accountId=${this.leasedAccountId}, email=${this.credentials.email}`
+        );
+        try {
             await this._autoLogin();
-            this._persistCredentialsIfNeeded();
-        } else {
-            this.logger.warn('当前终端无已保存的 WoS 账密，请手动完成登录（成功后按终端保存）');
-            await this._manualLogin();
+        } catch (autoErr) {
+            await this._releaseLeasedAccount('自动登录失败');
+            throw autoErr;
         }
 
         // 导航到作者搜索页
@@ -171,118 +182,69 @@ class WosAuthorCrawler extends BaseCrawler {
             });
         }
         if (!(await this._isOnAuthorSearchReady())) {
-            throw new Error('登录后未能进入作者搜索页，请确认账号已登录成功');
+            await this._releaseLeasedAccount('未能进入作者搜索页');
+            throw new Error('登录后未能进入作者搜索页，请确认账号可用');
         }
         await this._closeCookiePopup();
         await this.safeDelay(5000, 7000);
         this.logger.info('已成功到达作者搜索页面');
         await this._closeCookiePopup();
-        // 处理登录后的弹窗和验证
         await this._handlePostLoginInterventions();
     }
 
     /**
-     * 按当前终端加载 WoS 作者凭证（兼容旧版按用户库 / config.json 全局账密并迁移）
+     * 向 Spring 领取空闲 WoS 账号
      */
-    _reloadCredentialsFromConfig() {
-        try {
-            if (this.terminalId) {
-                const stored = getWosAuthorCredentials(this.terminalId);
-                if (stored?.email && stored?.password) {
-                    this.credentials = {
-                        email: stored.email,
-                        password: stored.password
-                    };
-                    return;
-                }
-            }
-
-            // 兼容：旧版按 App 用户存储 → 迁移到当前终端
-            const legacy = loadLegacyUserCredentials();
-            if (legacy?.email && legacy?.password) {
-                this.credentials = { email: legacy.email, password: legacy.password };
-                if (this.terminalId) {
-                    try {
-                        saveWosAuthorCredentials(this.terminalId, this.credentials);
-                        this.logger.info(
-                            `已将旧版按用户存储的 WoS 账密迁移到终端「${this.terminalId}」`
-                        );
-                    } catch (migrateErr) {
-                        this.logger.warn(`迁移旧版用户账密失败: ${migrateErr.message}`);
-                    }
-                }
-                return;
-            }
-
-            // 兼容旧版：全局 config.json 中的账密，迁移到当前终端后清空全局
-            this.configManager.reload();
-            const crawlerConfig = this.configManager.getCrawlerConfig('wos-author');
-            const email = crawlerConfig.credentials?.email || '';
-            const password = crawlerConfig.credentials?.password || '';
-            if (email && password) {
-                this.credentials = { email, password };
-                if (this.terminalId) {
-                    try {
-                        saveWosAuthorCredentials(this.terminalId, this.credentials);
-                        this.configManager.updateCrawlerConfig('wos-author', {
-                            credentials: { email: '', password: '' }
-                        });
-                        this.logger.info(
-                            `已将全局 WoS 账密迁移到终端「${this.terminalId}」，并清除 config.json 中的共享凭证`
-                        );
-                    } catch (migrateErr) {
-                        this.logger.warn(`迁移全局账密失败: ${migrateErr.message}`);
-                    }
-                } else {
-                    this.logger.warn('使用旧版全局 WoS 账密（未绑定终端 ID）');
-                }
-                return;
-            }
-
-            this.credentials = { email: '', password: '' };
-        } catch (e) {
-            this.logger.warn(`读取凭证失败: ${e.message}`);
-            this.credentials = { email: '', password: '' };
-        }
+    async _leaseAccountFromBackend() {
+        this.logger.info('正在向后端领取空闲 WoS 账号...');
+        const leased = await leaseWosAccount({
+            terminalId: this.terminalId,
+            taskId: this.spmTaskId,
+            authToken: this.authToken
+        });
+        this.leasedAccountId = leased.accountId;
+        this.credentials = {
+            email: leased.email,
+            password: leased.password
+        };
+        this.logger.info(`已领取 WoS 账号 | accountId=${this.leasedAccountId}, email=${this.credentials.email}`);
     }
 
     /**
-     * 将当前内存中的账密按终端 ID 写入本地凭证库
+     * 归还账号池账号（幂等）
      */
-    _persistCredentialsIfNeeded() {
-        if (!this.credentials?.email || !this.credentials?.password) return;
-        if (!this.terminalId) {
-            this.logger.warn('未绑定终端 ID，跳过保存 WoS 账密');
+    async _releaseLeasedAccount(reason = '') {
+        if (!this.leasedAccountId) {
             return;
         }
+        const accountId = this.leasedAccountId;
         try {
-            saveWosAuthorCredentials(this.terminalId, {
-                email: this.credentials.email,
-                password: this.credentials.password
+            await releaseWosAccount({
+                accountId,
+                terminalId: this.terminalId,
+                taskId: this.spmTaskId,
+                authToken: this.authToken
             });
             this.logger.info(
-                `WoS 作者账密已保存到终端「${this.terminalId}」，下次将自动登录`
+                `已释放 WoS 账号 | accountId=${accountId}${reason ? ` (${reason})` : ''}`
             );
         } catch (e) {
-            this.logger.warn(`保存账密失败: ${e.message}`);
+            this.logger.warn(`释放 WoS 账号失败 | accountId=${accountId}: ${e.message}`);
+        } finally {
+            this.leasedAccountId = null;
+            this.credentials = { email: '', password: '' };
         }
     }
 
-    /**
-     * 从登录表单抓取用户已输入的邮箱密码
-     */
-    async _captureCredentialsFromForm() {
-        try {
-            const email = await this.page.locator('input[formcontrolname="email"]').inputValue().catch(() => '');
-            const password = await this.page.locator('input[formcontrolname="password"]').inputValue().catch(() => '');
-            if (email && password) {
-                this.credentials = { email: email.trim(), password };
-                return true;
-            }
-        } catch (e) {
-            // 页面可能已跳转
-        }
-        return false;
+    async afterCrawl() {
+        await this._releaseLeasedAccount('任务完成');
+        await super.afterCrawl();
+    }
+
+    async cleanup(options = {}) {
+        // 成功/失败/中断收尾时都尝试释放账号（幂等）
+        await this._releaseLeasedAccount('cleanup');
+        return super.cleanup(options);
     }
 
     /**
@@ -490,84 +452,17 @@ class WosAuthorCrawler extends BaseCrawler {
     }
 
     /**
-     * 手动登录（等待用户操作）；成功后把账密按终端 ID 写入本地凭证库
+     * 手动登录已废弃：账密改由后端账号池自动领取并登录
      */
     async _manualLogin() {
-        if (!this.state.isRunning) {
-            throw new Error('爬虫已停止，登录中断');
-        }
-        this.logger.warn('请在浏览器中手动输入账号密码并点击登录（不要只点注册切换）');
-
-        await this._showBrowserForIntervention();
-        try {
-            this._sendManualLoginNotification().catch(err => {
-                this.logger.warn(`发送通知失败: ${err.message}`);
-            });
-            const startTime = Date.now();
-            const timeout = 10 * 60 * 1000; // 10分钟超时
-
-            while (Date.now() - startTime < timeout && this.state.isRunning) {
-                if (!this.page || this.page.isClosed()) {
-                    throw new Error('浏览器窗口已关闭，登录中断');
-                }
-                try {
-                    // 还在登录页时持续抓取表单账密，跳转后就读不到了
-                    const url = this.page.url();
-                    if (url.includes('login') || url.includes('access.clarivate.com')) {
-                        await this._captureCredentialsFromForm();
-                    }
-
-                    if (this._isAuthenticatedWosUrl(url) || await this._isOnAuthorSearchReady()) {
-                        // 若跳转前没抓到密码，再试一次（可能还在 SPA 过渡）
-                        if (!this.credentials.password) {
-                            await this._captureCredentialsFromForm();
-                        }
-                        this.logger.info('检测到用户已手动登录成功');
-                        this._persistCredentialsIfNeeded();
-                        return;
-                    }
-
-                    // 点到注册页：明确提示，不要当成已登录
-                    if (/register|sign[\s_-]*up|create[\s_-]*account|registration/i.test(url)) {
-                        this.logger.warn('当前在注册页，请切回登录并完成登录（不会判定为已登录）');
-                    }
-                } catch (error) {
-                    if (this.page && this.page.isClosed()) {
-                        throw new Error('浏览器窗口已关闭，登录中断');
-                    }
-                    this.logger.warn(`获取页面状态失败: ${error.message}`);
-                }
-                await this.safeDelay(2000, 2000);
-            }
-
-            throw new Error('用户手动登录超时（10分钟）');
-        } finally {
-            await this._hideBrowserAfterIntervention();
-        }
+        throw new Error('WoS 作者检索已改为后端账号池自动登录，不再支持本地手动录入账密');
     }
 
     /**
      * 发送手动登录通知到前端
      */
     async _sendManualLoginNotification() {
-        const io = require('../infrastructure/socket-io-manager').getIo();
-        if (!io) {
-            this.logger.warn('Socket.IO 未初始化');
-            return;
-        }
-
-        // 发送事件到前端，触发弹窗提示
-        io.emit('user-intervention-required', {
-            id: `manual-login-${Date.now()}`,
-            type: 'manual-login',
-            source: this.crawlerType,
-            data: {
-                message: '请在弹出的浏览器窗口中手动登录 WoS 账号',
-                instruction: '1. 输入邮箱和密码并点击登录（不要只点注册）\n2. 登录成功后账密会写入配置，下次自动登录且不再弹窗\n3. 爬虫将自动继续'
-            }
-        });
-
-        this.logger.info('已发送手动登录提示到前端');
+        // 保留空实现，避免历史调用报错
     }
 
     /**

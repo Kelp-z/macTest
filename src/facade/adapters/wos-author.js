@@ -19,7 +19,7 @@ function createWosAuthorCrawlerFacade() {
       source: 'wos-author',
       inputType: 'authors',
       supportsIntervention: true,
-      interventionTypes: ['manual-login']
+      interventionTypes: []
     }
   };
 }

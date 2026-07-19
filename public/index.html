@@ -2209,9 +2209,16 @@
             requestBody.outputDir = outputDir;
         }
 
-        // 绑定当前终端机器码，后端按终端隔离第三方账密与会话
+        // 绑定当前终端机器码（账号池占用 / 浏览器会话）
         if (terminalMachineCode && terminalMachineCode !== 'unknown') {
             requestBody.terminalId = terminalMachineCode;
+        }
+        // Spring 任务 ID + 登录 Token，供 WoS 作者等从后端账号池领取账密
+        if (task && task.id != null) {
+            requestBody.spmTaskId = task.id;
+        }
+        if (backendToken) {
+            requestBody.authToken = backendToken;
         }
 
         const res = await apiRequest(`${baseUrl}/crawl/start`, 'POST', requestBody);

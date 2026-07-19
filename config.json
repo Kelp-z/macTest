@@ -63,9 +63,6 @@
     "SCREENSHOT_DIR_NAME": "screenshots"
   },
   "wosAuthor": {
-    "OUTPUT_BASE_DIR_NAME": "../output/wos_authors",
-    "credentials": {
-
-    }
+    "OUTPUT_BASE_DIR_NAME": "../output/wos_authors"
   }
 }
