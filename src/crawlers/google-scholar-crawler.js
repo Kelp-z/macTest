@@ -21,15 +21,15 @@ class GoogleScholarCrawler extends BaseCrawler {
             // 精确匹配时优先采用 Google 排名第 1 的结果（与手动搜索一致）
             PREFER_FIRST_RESULT: crawlerConfig.PREFER_FIRST_RESULT !== false,
             // 搜索时对标题加引号做短语检索
-            QUOTED_TITLE_SEARCH: crawlerConfig.QUOTED_TITLE_SEARCH === true,
+            QUOTED_TITLE_SEARCH: crawlerConfig.QUOTED_TITLE_SEARCH !== false,
             // 先用请求原文（完整 title/authors）判断第 1 条是否匹配，避免坏关键词误选后面结果
             MATCH_REQUEST_FIRST: crawlerConfig.MATCH_REQUEST_FIRST !== false,
             VISIT_CITATION_ENABLED: crawlerConfig.VISIT_CITATION_ENABLED ?? true,
             MAX_CITATION_PAGES: crawlerConfig.MAX_CITATION_PAGES ?? 2,
             OUTPUT_BASE_DIR_NAME: crawlerConfig.OUTPUT_BASE_DIR_NAME ?? 'output/google',
             PERSIST_PROFILE: crawlerConfig.PERSIST_PROFILE !== false,
-            SEARCH_DELAY_MIN_MS: crawlerConfig.SEARCH_DELAY_MIN_MS ?? 4000,
-            SEARCH_DELAY_MAX_MS: crawlerConfig.SEARCH_DELAY_MAX_MS ?? 9000
+            SEARCH_DELAY_MIN_MS: crawlerConfig.SEARCH_DELAY_MIN_MS ?? 5000,
+            SEARCH_DELAY_MAX_MS: crawlerConfig.SEARCH_DELAY_MAX_MS ?? 12000
         };
 
         // 内部状态
@@ -42,8 +42,6 @@ class GoogleScholarCrawler extends BaseCrawler {
         this.originalPapers = [];
         // 生成的关键词列表
         this.processedKeywords = [];
-        // 触发风控后提高后续间隔，降低再次被拦概率
-        this._postBlockCooldown = false;
     }
 
     /**
@@ -59,7 +57,6 @@ class GoogleScholarCrawler extends BaseCrawler {
         this.fileIndex = 1;
         this.originalPapers = [];
         this.processedKeywords = [];
-        this._postBlockCooldown = false;
 
 
         // 提前创建输出目录用于存储下载文件
@@ -118,7 +115,6 @@ class GoogleScholarCrawler extends BaseCrawler {
         this.originalPapers = [];
         this.processedKeywords = [];
         this.currentOutputDir = null;
-        this._postBlockCooldown = false;
 
         // 调用父类的通用重置逻辑
         super.resetState();
@@ -128,10 +124,6 @@ class GoogleScholarCrawler extends BaseCrawler {
     /**
      * 初始化浏览器（重写父类方法）
      */
-    _getBrowserHomeUrl() {
-        return 'https://scholar.google.com';
-    }
-
     async initBrowser() {
         // 确保 EndNote 下载目录存在
         const endNoteDir = path.join(this.currentOutputDir, 'endnote_downloads');
@@ -139,31 +131,44 @@ class GoogleScholarCrawler extends BaseCrawler {
             fs.mkdirSync(endNoteDir, {recursive: true});
         }
 
-        // 使用引擎级共享浏览器 + Scholar 标签（与其它站点标签并存，不互相关掉）
-        await super.initBrowser();
-        // 只关临时页（如引用详情），保留 wos/scopus 等站点标签
-        await this._closeExtraPages();
-        this.logger.info(`浏览器已初始化（共享），EndNote 下载目录: ${endNoteDir}`);
-    }
-
-    /**
-     * 关闭临时页签；保留共享池中的各站点标签（Scholar/WoS/Scopus）
-     */
-    async _closeExtraPages() {
-        try {
-            const { getSharedBrowserPool } = require('../infrastructure/shared-browser-pool');
-            const protectedPages = getSharedBrowserPool().getProtectedPages();
-            const ctx = this.context || this.page?.context?.();
-            if (!ctx || typeof ctx.pages !== 'function') return;
-            const pages = ctx.pages();
-            for (const p of pages) {
-                if (!p || p === this.page || p.isClosed()) continue;
-                if (protectedPages.has(p)) continue;
-                await p.close().catch(() => {});
-            }
-        } catch (e) {
-            this.logger.warn(`关闭多余页签失败: ${e.message}`);
+        // 复用常驻浏览器，避免每开任务闪一下再缩小
+        if (this._isBrowserAlive()) {
+            this.logger.info('复用 Google Scholar 常驻浏览器（保持最小化）');
+            await this.browserManager.hideWindow(this.page, this.browser);
+            this._setupBrowserCloseListener();
+            return;
         }
+
+        const browserOptions = this.configManager.getBrowserOptions();
+
+        if (this.searchConfig.PERSIST_PROFILE) {
+            const profileDir = this.browserManager.getPersistentUserDataDir('google-scholar');
+            // 下载目录固定到 profile 下，任务内再拷贝到 currentOutputDir
+            const stickyDownloadDir = path.join(profileDir, 'downloads');
+            if (!fs.existsSync(stickyDownloadDir)) {
+                fs.mkdirSync(stickyDownloadDir, { recursive: true });
+            }
+            const { browser, context, page } = await this.browserManager.launchPersistent(profileDir, {
+                ...browserOptions,
+                downloadsPath: stickyDownloadDir
+            });
+            this.browser = browser;
+            this.context = context;
+            this.page = page;
+            this.logger.info(`已启用 Google Scholar 持久化配置: ${profileDir}`);
+        } else {
+            this.browser = await this.browserManager.launch(browserOptions);
+            const {page, context} = await this.browserManager.createPage(this.browser, {
+                downloadsPath: endNoteDir
+            });
+            this.page = page;
+            this.context = context;
+        }
+
+        await this.browserManager.applyInitialVisibility(this.page, this.browser);
+        this._setupBrowserCloseListener();
+
+        this.logger.info(`浏览器已初始化，EndNote 下载目录: ${endNoteDir}`);
     }
 
 
@@ -321,28 +326,23 @@ class GoogleScholarCrawler extends BaseCrawler {
             } catch (error) {
                 if (error.message === '遭遇谷歌反脚本检测，检索中断') {
                     this.logger.error(error.message);
+                    // 记录为失败数据（带特殊标记）
                     const failedPaper = originalPapers[i] || {title: keyword};
                     this._recordFailedPaper(failedPaper, error.message);
-                    throw error;
+                    throw error; // 重新抛出，中断外层循环
                 }
                 this.logger.error(`关键词 "${keyword}" 搜索失败: ${error.message}`);
+                // 记录失败时也要关联原始论文
                 const failedPaper = originalPapers[i] || {title: keyword};
                 this._recordFailedPaper(failedPaper, error.message);
+
             }
 
-            // 随机延迟 + 周期性额外停顿，降低连续检索触发风控
-            let delayMin = this.searchConfig.SEARCH_DELAY_MIN_MS;
-            let delayMax = this.searchConfig.SEARCH_DELAY_MAX_MS;
-            if (this._postBlockCooldown) {
-                delayMin += 4000;
-                delayMax += 8000;
-            }
-            if ((i + 1) % 3 === 0) {
-                delayMin += 2000;
-                delayMax += 4000;
-                this.logger.info('周期性放慢检索节奏，降低风控概率');
-            }
-            await this._randomDelay(delayMin, delayMax);
+            // 随机延迟，降低 Google 人机验证频率
+            await this._randomDelay(
+                this.searchConfig.SEARCH_DELAY_MIN_MS,
+                this.searchConfig.SEARCH_DELAY_MAX_MS
+            );
         }
         // 如果需要访问引用链接
         if (this.shouldVisitCitations && this.successPaperList.length > 0) {
@@ -399,7 +399,7 @@ class GoogleScholarCrawler extends BaseCrawler {
 
             try {
                 newPage = await context.newPage();
-                await newPage.goto(citationLink, {timeout: 30000, waitUntil: 'domcontentloaded'})
+                await newPage.goto(citationLink, {timeout: 30000, waitUntil: 'networkidle'})
                     .catch(async (e) => {
                         this.logger.warn(`加载引用页面超时: ${e.message}，继续尝试...`);
                         await newPage.waitForTimeout(5000);
@@ -521,7 +521,7 @@ class GoogleScholarCrawler extends BaseCrawler {
                             if (href) {
                                 const nextUrl = new URL(href, newPage.url()).href;
                                 this.logger.info(`找到下一页链接`);
-                                await newPage.goto(nextUrl, {timeout: 30000, waitUntil: 'domcontentloaded'})
+                                await newPage.goto(nextUrl, {timeout: 30000, waitUntil: 'networkidle'})
                                     .catch(async (e) => {
                                         this.logger.warn(`加载下一页超时: ${e.message}`);
                                         await newPage.waitForTimeout(5000);
@@ -819,6 +819,112 @@ class GoogleScholarCrawler extends BaseCrawler {
     }
 
     /**
+     * 在指定页面上下载并解析 EndNote 文件
+     * @param {Object} page - Playwright 页面对象
+     * @param {Object} article - 文章元素
+     * @param {string} downloadDir - 下载目录
+     * @returns {Promise<Object>} 包含 endNoteLink, downloadedFilePath, parsedEndNote
+     */
+    async _extractAndDownloadEndNoteFileOnPage(page, article, downloadDir) {
+        let endNoteLink = null;
+        let downloadedFilePath = null;
+        let parsedEndNote = null;
+
+        try {
+            let citeButton = article.locator('.gs_or_cit').first();
+            if (!await citeButton.isVisible()) {
+                citeButton = article.locator("a[class*='gs_or_cit']").first();
+            }
+
+            if (await citeButton.isVisible()) {
+                this.logger.info('点击引用按钮...');
+                await humanClick(page, citeButton);
+                await randomDelay(page);
+
+                // 等待引用弹窗出现
+                await page.waitForSelector('#gs_cit', { timeout: 5000 }).catch(() => {
+                    this.logger.warn('引用弹窗未出现');
+                });
+
+                // 等待 EndNote 链接出现
+                await page.waitForSelector("#gs_cit .gs_citi[href*='scholar.enw']", { timeout: 5000 }).catch(() => {
+                    this.logger.warn('EndNote 链接未出现');
+                });
+
+                const endNoteLinkElement = page.locator("#gs_cit .gs_citi[href*='scholar.enw']").first();
+                if (await endNoteLinkElement.isVisible()) {
+                    endNoteLink = await endNoteLinkElement.getAttribute('href');
+                    this.logger.info(`EndNote链接: ${endNoteLink}`);
+
+                    // 同时等待下载事件和点击操作
+                    const [download] = await Promise.all([
+                        page.waitForEvent('download', { timeout: 10000 }),
+                        humanClick(page, endNoteLinkElement)
+                    ]);
+
+                    await randomDelay(page);
+
+                    // 获取下载的文件路径
+                    const tempFilePath = await download.path();
+                    this.logger.info(`临时文件路径: ${tempFilePath}`);
+
+                    if (tempFilePath && fs.existsSync(tempFilePath)) {
+                        const timestamp = Date.now();
+                        const targetFileName = `citation_${timestamp}.enw`;
+                        downloadedFilePath = path.join(downloadDir, targetFileName);
+
+                        // 复制到目标目录
+                        fs.copyFileSync(tempFilePath, downloadedFilePath);
+                        this.logger.info(`EndNote文件已保存到: ${downloadedFilePath}`);
+
+                        // 立即解析
+                        parsedEndNote = this._parseEndNoteFile(downloadedFilePath);
+                    } else {
+                        this.logger.error('下载的文件不存在或路径为空');
+                    }
+
+                    // 关闭引用弹窗
+                    try {
+                        const closeButton = page.locator('#gs_cit-x');
+                        if (await closeButton.isVisible()) {
+                            await humanClick(page, closeButton);
+                            await randomDelay(page);
+                        }
+                    } catch (e) {
+                        this.logger.warn(`关闭弹窗失败: ${e.message}`);
+                    }
+                } else {
+                    this.logger.info('未找到 EndNote 下载链接');
+                    // 尝试关闭弹窗
+                    try {
+                        const closeButton = page.locator('#gs_cit-x');
+                        if (await closeButton.isVisible()) {
+                            await humanClick(page, closeButton);
+                        }
+                    } catch (e) {
+                        // 忽略
+                    }
+                }
+            } else {
+                this.logger.info('未找到引用按钮');
+            }
+        } catch (e) {
+            this.logger.error(`下载EndNote失败: ${e.message}`);
+            // 尝试关闭弹窗
+            try {
+                const closeButton = page.locator('#gs_cit-x');
+                if (await closeButton.isVisible()) {
+                    await humanClick(page, closeButton);
+                }
+            } catch (closeError) {
+                // 忽略
+            }
+        }
+
+        return { endNoteLink, downloadedFilePath, parsedEndNote };
+    }
+
+    /**
      * 构造更接近手动搜索的查询串（默认对标题加引号做短语检索）
      */
     _buildSearchQuery(keyword) {
@@ -842,113 +948,38 @@ class GoogleScholarCrawler extends BaseCrawler {
      * @param {Object} [requestPaper] - 原始请求数据（完整 title/authors，用于匹配裁判）
      */
     async _searchSingleKeyword(keyword, options, requestPaper = null) {
-        const maxAttempts = 2;
-        let lastError = null;
+        const searchQuery = this._buildSearchQuery(keyword);
+        this.logger.info(`正在搜索: ${searchQuery}`);
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                return await this._searchSingleKeywordOnce(keyword, options, requestPaper);
-            } catch (error) {
-                lastError = error;
-                const blocked = error.message === '遭遇谷歌反脚本检测，检索中断'
-                    || /Timeout.*input\[name="q"\]/i.test(error.message)
-                    || error.message.includes('搜索框不可用');
-
-                if (blocked && attempt < maxAttempts) {
-                    this.logger.warn(`检索受阻（第 ${attempt} 次），尝试人工处理后重试当前关键词`);
-                    await this._recoverFromGoogleBlock(error.message);
-                    continue;
-                }
-                throw error;
-            }
-        }
-        throw lastError || new Error('搜索失败');
-    }
-
-    /**
-     * 风控/验证页恢复：弹出窗口等人处理 → 冷却 → 回到 Scholar 首页
-     */
-    async _recoverFromGoogleBlock(reason = '') {
-        this._postBlockCooldown = true;
-        this.logger.warn(`Google 风控/验证恢复流程开始${reason ? `: ${reason}` : ''}`);
-
-        try {
-            if (await isAnyCaptchaPresent(this.page)) {
-                await handleAnyCaptcha(this.page, this._getCaptchaContext());
-            } else {
-                // 即使选择器未命中，也按人工干预处理（"We're sorry" 等）
-                await handleAnyCaptcha(this.page, this._getCaptchaContext());
-            }
-        } catch (e) {
-            this.logger.warn(`人工验证等待结束/失败: ${e.message}`);
-        }
-
-        this.logger.info('冷却一段时间后返回 Scholar 首页...');
-        await this._randomDelay(10000, 20000);
-
-        try {
+        // 已在 Scholar 上时复用页面，减少重复导航触发风控
+        const currentUrl = this.page.url();
+        const alreadyOnScholar = currentUrl.includes('scholar.google.');
+        if (!alreadyOnScholar) {
             await this.page.goto('https://scholar.google.com', {
                 timeout: 30000,
                 waitUntil: 'domcontentloaded'
             });
             await this._randomDelay(1500, 3000);
-            if (await isAnyCaptchaPresent(this.page)) {
-                await handleAnyCaptcha(this.page, this._getCaptchaContext());
-            }
-        } catch (e) {
-            this.logger.warn(`返回 Scholar 首页失败: ${e.message}`);
-        }
-    }
-
-    /**
-     * 确保可搜索：不在风控页，且搜索框可见
-     */
-    async _ensureScholarReadyForSearch() {
-        const antiBotCheck = await checkGoogleAntiBot(this.page, this.logger);
-        if (antiBotCheck.isBlocked || await isAnyCaptchaPresent(this.page)) {
-            await this._recoverFromGoogleBlock(antiBotCheck.message || '检测到验证/风控页');
         }
 
-        const currentUrl = this.page.url();
-        const onScholar = currentUrl.includes('scholar.google.');
-        const onSorry = currentUrl.includes('/sorry/') || currentUrl.includes('google.com/sorry');
-        if (!onScholar || onSorry) {
-            await this.page.goto('https://scholar.google.com', {
-                timeout: 30000,
-                waitUntil: 'domcontentloaded'
-            });
-            await this._randomDelay(1000, 2000);
+        // 检查验证码
+        if (await isAnyCaptchaPresent(this.page)) {
+            await handleAnyCaptcha(this.page, this._getCaptchaContext());
         }
 
+        // 输入关键词
         const searchInput = this.page.locator('input[name="q"]').first();
-        const visible = await searchInput.waitFor({ state: 'visible', timeout: 8000 })
-            .then(() => true)
-            .catch(() => false);
-        if (!visible) {
-            throw new Error('搜索框不可用（可能仍在风控页）');
-        }
-        return searchInput;
-    }
-
-    async _searchSingleKeywordOnce(keyword, options, requestPaper = null) {
-        const searchQuery = this._buildSearchQuery(keyword);
-        this.logger.info(`正在搜索: ${searchQuery}`);
-
-        const searchInput = await this._ensureScholarReadyForSearch();
-
-        // 模拟真人逐字输入（避免瞬间 fill 触发风控）
+        await searchInput.waitFor({state: 'visible', timeout: 10000});
         await humanType(this.page, searchInput, searchQuery);
+
         await this._randomDelay(1000, 2500);
 
+        // 提交搜索
         await this.page.keyboard.press('Enter');
         await this.page.waitForLoadState('domcontentloaded');
         await this._randomDelay(2000, 4000);
 
-        // 提交后若立刻落到风控页，先恢复再判定失败
-        if (await isAnyCaptchaPresent(this.page)) {
-            await this._recoverFromGoogleBlock('搜索提交后出现验证/风控');
-        }
-
+        // 匹配裁判优先用请求原文；关键词仅作查询与兜底
         const extractedData = await this._extractSearchResults(keyword, requestPaper);
 
         return {
@@ -968,7 +999,6 @@ class GoogleScholarCrawler extends BaseCrawler {
 
             const antiBotCheck = await checkGoogleAntiBot(this.page, this.logger);
             if (antiBotCheck.isBlocked) {
-                // 必须上抛，禁止吞掉后继续下一条（否则会在风控页连搜加重封禁）
                 throw new Error('遭遇谷歌反脚本检测，检索中断');
             }
             // 等待搜索结果加载
@@ -992,9 +1022,6 @@ class GoogleScholarCrawler extends BaseCrawler {
                 return await this._handleGeneralSearch(searchResults, resultCount, keyword);
             }
         } catch (error) {
-            if (error.message === '遭遇谷歌反脚本检测，检索中断') {
-                throw error;
-            }
             this.logger.error(`提取搜索结果失败: ${error.message}`);
             this._recordFailedPaper(requestPaper || keyword, `提取结果出错: ${error.message}`);
             return {success: false, data: null};
@@ -1212,66 +1239,18 @@ class GoogleScholarCrawler extends BaseCrawler {
     /**
      * 关闭引用弹窗
      */
-    async _closeCitationPopup(page = null) {
-        const target = page || this.page;
+    async _closeCitationPopup() {
         try {
-            const closeButton = target.locator('#gs_cit-x, .gs_btn_cls, button[aria-label*="Close" i]').first();
-            if (await closeButton.isVisible({ timeout: 1500 }).catch(() => false)) {
-                await humanClick(target, closeButton);
-                await randomDelay(target);
+            const closeButton = this.page.locator('#gs_cit-x');
+            if (await closeButton.isVisible()) {
+                await humanClick(this.page, closeButton);
+                await randomDelay(this.page);
                 this.logger.info('已关闭引用弹窗');
-                await target.waitForSelector('#gs_cit', { state: 'hidden', timeout: 5000 }).catch(() => {});
-            } else {
-                await target.keyboard.press('Escape').catch(() => {});
+                await this.page.waitForSelector('#gs_cit', {state: 'hidden', timeout: 3000});
             }
         } catch (e) {
             this.logger.warn(`关闭弹窗失败: ${e.message}`);
         }
-    }
-
-    /**
-     * 定位引用弹窗中的 EndNote 链接（兼容不同语言/DOM）
-     */
-    _endNoteLinkLocator(page) {
-        return page.locator([
-            "#gs_cit .gs_citi[href*='scholar.enw']",
-            "#gs_cit a[href*='scholar.enw']",
-            "#gs_cit a[href*='.enw']",
-            "#gs_cit a:has-text('EndNote')",
-            "#gs_cit a:has-text('Enw')"
-        ].join(', ')).first();
-    }
-
-    /**
-     * 点击结果的「引用」并等待弹窗（超时不抛错，返回是否成功）
-     */
-    async _openCitationPopup(page, result) {
-        let citeButton = result.locator('.gs_or_cit, a.gs_or_cit, a[class*="gs_or_cit"]').first();
-        if (!(await citeButton.isVisible({ timeout: 2000 }).catch(() => false))) {
-            citeButton = result.locator("a:has-text('引用'), a:has-text('Cite')").first();
-        }
-        if (!(await citeButton.isVisible({ timeout: 2000 }).catch(() => false))) {
-            return false;
-        }
-
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            this.logger.info(`点击引用按钮（第 ${attempt} 次）...`);
-            await humanClick(page, citeButton);
-            this.logger.info('已点击引用按钮，等待弹窗...');
-            await randomDelay(page, 150, 350);
-            const appeared = await page.waitForSelector('#gs_cit', {
-                state: 'visible',
-                timeout: 6000
-            }).then(() => true).catch(() => false);
-            if (appeared) {
-                this.logger.info('引用弹窗已出现');
-                return true;
-            }
-            this.logger.warn('引用弹窗未出现，准备重试');
-            await this._closeCitationPopup(page);
-            await page.waitForTimeout(400);
-        }
-        return false;
     }
 
     /**
@@ -1288,210 +1267,77 @@ class GoogleScholarCrawler extends BaseCrawler {
     }
 
     /**
-     * 通过 URL 拉取 .enw：优先点击下载（最快最稳），成功即返回；失败再试页内 fetch
-     */
-    async _downloadEndNoteByUrl(page, endNoteLink, downloadDir, fileName) {
-        if (!endNoteLink) return null;
-        const absoluteUrl = new URL(endNoteLink, page.url()).href;
-        if (!fs.existsSync(downloadDir)) {
-            fs.mkdirSync(downloadDir, { recursive: true });
-        }
-        const targetPath = path.join(downloadDir, fileName);
-        const referer = page.url();
-
-        const trySaveText = (text, label) => {
-            if (!this._isValidEndNoteContent(text)) {
-                this.logger.warn(`EndNote ${label} 返回内容无效（可能是验证页/空响应）`);
-                return false;
-            }
-            fs.writeFileSync(targetPath, text, 'utf8');
-            return true;
-        };
-
-        // 1) 优先：点击链接触发浏览器下载（实践中成功率最高，成功则不再试其它方式）
-        try {
-            const endNoteLinkElement = this._endNoteLinkLocator(page);
-            // 前面已确认链接存在，这里短等可见即可点击
-            if (await endNoteLinkElement.isVisible({ timeout: 1500 }).catch(() => false)) {
-                const [download] = await Promise.all([
-                    page.waitForEvent('download', { timeout: 12000 }),
-                    endNoteLinkElement.click({ delay: 50, timeout: 5000 }).catch(() => humanClick(page, endNoteLinkElement))
-                ]);
-                try {
-                    await download.saveAs(targetPath);
-                } catch (saveErr) {
-                    const tempFilePath = await download.path();
-                    if (tempFilePath && fs.existsSync(tempFilePath)) {
-                        fs.copyFileSync(tempFilePath, targetPath);
-                    } else {
-                        throw saveErr;
-                    }
-                }
-                if (fs.existsSync(targetPath)) {
-                    const text = fs.readFileSync(targetPath, 'utf8');
-                    if (this._isValidEndNoteContent(text)) {
-                        this.logger.info('EndNote 点击下载成功');
-                        return targetPath;
-                    }
-                    this.logger.warn('点击下载的文件内容不是有效 EndNote');
-                    try { fs.unlinkSync(targetPath); } catch (e) {}
-                }
-            }
-        } catch (dlErr) {
-            this.logger.warn(`EndNote 点击下载失败，尝试备用方式: ${dlErr.message}`);
-        }
-
-        // 2) 备用：页内 fetch（较快，不占长超时）
-        try {
-            const fetched = await page.evaluate(async ({ url, referer }) => {
-                try {
-                    const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), 8000);
-                    const res = await fetch(url, {
-                        method: 'GET',
-                        credentials: 'include',
-                        redirect: 'follow',
-                        signal: controller.signal,
-                        headers: { Accept: 'text/plain,*/*', Referer: referer }
-                    });
-                    clearTimeout(timer);
-                    const text = await res.text();
-                    return { ok: res.ok, status: res.status, text };
-                } catch (e) {
-                    return { ok: false, status: 0, text: '', error: String(e && e.message || e) };
-                }
-            }, { url: absoluteUrl, referer });
-
-            if (fetched?.ok && trySaveText(fetched.text, '页内fetch')) {
-                return targetPath;
-            }
-            if (fetched?.error) {
-                this.logger.warn(`EndNote 页内fetch异常: ${fetched.error}`);
-            }
-        } catch (e) {
-            this.logger.warn(`EndNote 页内fetch失败: ${e.message}`);
-        }
-
-        return null;
-    }
-
-    /**
-     * 粗判是否为 EndNote / RIS 文本（避免把验证码 HTML 当成功）
-     */
-    _isValidEndNoteContent(text) {
-        if (!text || typeof text !== 'string') return false;
-        const t = text.trim();
-        if (t.length < 8) return false;
-        const lower = t.slice(0, 200).toLowerCase();
-        if (lower.includes('<!doctype') || lower.includes('<html') || lower.includes('<head')) {
-            return false;
-        }
-        return /^%0\b/m.test(t) || /^TY\s+-/m.test(t) || /%T\s/.test(t) || /%A\s/.test(t) || /TI\s+-/m.test(t);
-    }
-
-    /**
-     * 下载并解析 EndNote（带重试）
+     * 下载并解析 EndNote 文件
+     * @param {Object} result - 搜索结果元素
+     * @returns {Promise<Object>} 包含 endNoteLink, downloadedFilePath, parsedEndNote
      */
     async _extractAndDownloadEndNoteFile(result) {
-        const maxAttempts = 2;
-        let last = { endNoteLink: null, downloadedFilePath: null, parsedEndNote: null };
-
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            last = await this._extractAndDownloadEndNoteFileOnce(this.page, result, {
-                downloadDir: path.join(this.currentOutputDir, 'endnote_downloads'),
-                fileName: `scholar_${this.fileIndex}.enw`
-            });
-            if (last.parsedEndNote) {
-                this.fileIndex++;
-                return last;
-            }
-            if (attempt < maxAttempts) {
-                this.logger.warn(`EndNote 下载第 ${attempt}/${maxAttempts} 次未成功，准备重试`);
-                await this._closeCitationPopup();
-                await this.safeDelay(400, 800);
-            }
-        }
-        this.fileIndex++;
-        return last;
-    }
-
-    async _extractAndDownloadEndNoteFileOnPage(page, article, downloadDir) {
-        const maxAttempts = 2;
-        let last = { endNoteLink: null, downloadedFilePath: null, parsedEndNote: null };
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            last = await this._extractAndDownloadEndNoteFileOnce(page, article, {
-                downloadDir,
-                fileName: `citation_${Date.now()}_${attempt}.enw`
-            });
-            if (last.parsedEndNote) return last;
-            if (attempt < maxAttempts) {
-                this.logger.warn(`引用页 EndNote 第 ${attempt}/${maxAttempts} 次未成功，准备重试`);
-                await this._closeCitationPopup(page);
-                await page.waitForTimeout(400);
-            }
-        }
-        return last;
-    }
-
-    /**
-     * 单次：打开引用弹窗 → 取 EndNote 链接 → 下载解析
-     */
-    async _extractAndDownloadEndNoteFileOnce(page, result, { downloadDir, fileName }) {
         let endNoteLink = null;
         let downloadedFilePath = null;
         let parsedEndNote = null;
 
         try {
-            const opened = await this._openCitationPopup(page, result);
-            if (!opened) {
-                this.logger.warn('未能打开引用弹窗');
-                return { endNoteLink, downloadedFilePath, parsedEndNote };
+            let citeButton = result.locator('.gs_or_cit').first();
+            if (!await citeButton.isVisible()) {
+                citeButton = result.locator("a[class*='gs_or_cit']").first();
             }
 
-            // 弹窗出现后立刻找 EndNote 链接（只要挂到 DOM 即可取 href，不必再叠长 isVisible）
-            const endNoteLinkElement = this._endNoteLinkLocator(page);
-            const linkReady = await endNoteLinkElement.waitFor({ state: 'attached', timeout: 2500 })
-                .then(() => true)
-                .catch(() => false);
-            if (!linkReady) {
-                this.logger.warn('引用弹窗中未找到 EndNote 链接');
-                await this._closeCitationPopup(page);
-                return { endNoteLink, downloadedFilePath, parsedEndNote };
-            }
+            if (await citeButton.isVisible()) {
+                this.logger.info('点击引用按钮...');
+                await humanClick(this.page, citeButton);
+                await randomDelay(this.page);
+                await this.page.waitForSelector('#gs_cit', {timeout: 5000});
+                await this.page.waitForSelector("#gs_cit .gs_citi[href*='scholar.enw']", {timeout: 5000});
 
-            endNoteLink = await endNoteLinkElement.getAttribute('href');
-            if (!endNoteLink) {
-                this.logger.warn('EndNote 链接节点无 href');
-                await this._closeCitationPopup(page);
-                return { endNoteLink, downloadedFilePath, parsedEndNote };
-            }
-            this.logger.info(`已找到 EndNote 链接: ${endNoteLink}`);
+                const endNoteLinkElement = this.page.locator("#gs_cit .gs_citi[href*='scholar.enw']").first();
+                if (await endNoteLinkElement.isVisible()) {
+                    endNoteLink = await endNoteLinkElement.getAttribute('href');
+                    this.logger.info(`EndNote链接: ${endNoteLink}`);
 
-            if (!fs.existsSync(downloadDir)) {
-                fs.mkdirSync(downloadDir, { recursive: true });
-            }
+                    // 确保下载目录存在
+                    const endNoteDir = path.join(this.currentOutputDir, 'endnote_downloads');
 
-            downloadedFilePath = await this._downloadEndNoteByUrl(page, endNoteLink, downloadDir, fileName);
-            if (downloadedFilePath) {
-                this.logger.info(`EndNote文件已保存到: ${downloadedFilePath}`);
-                parsedEndNote = this._parseEndNoteFile(downloadedFilePath);
-                // 即使解析字段偏少，也保留路径，方便表里展示下载路径
-                if (!parsedEndNote) {
-                    parsedEndNote = { filePath: downloadedFilePath };
-                } else if (!parsedEndNote.filePath) {
-                    parsedEndNote.filePath = downloadedFilePath;
+                    // 同时等待下载事件和点击操作
+                    const [download] = await Promise.all([
+                        this.page.waitForEvent('download', {timeout: 10000}),
+                        humanClick(this.page, endNoteLinkElement)
+                    ]);
+
+                    await randomDelay(this.page);
+
+                    // 获取下载的文件路径（现在应该不为 null）
+                    const tempFilePath = await download.path();
+                    this.logger.info(`临时文件路径: ${tempFilePath}`);
+
+                    if (tempFilePath && fs.existsSync(tempFilePath)) {
+                        const targetFileName = `scholar_${this.fileIndex}.enw`;
+                        this.fileIndex++;
+                        downloadedFilePath = path.join(endNoteDir, targetFileName);
+
+                        // 复制到目标目录
+                        fs.copyFileSync(tempFilePath, downloadedFilePath);
+                        this.logger.info(`EndNote文件已保存到: ${downloadedFilePath}`);
+
+                        // 立即解析
+                        parsedEndNote = this._parseEndNoteFile(downloadedFilePath);
+                    } else {
+                        this.logger.error('下载的文件不存在或路径为空');
+                    }
+
+                    await this._closeCitationPopup();
+                } else {
+                    this.logger.info('未找到 EndNote 下载链接');
+                    await this._closeCitationPopup();
                 }
             } else {
-                this.logger.warn('EndNote 下载失败：未得到有效文件');
+                this.logger.info('未找到引用按钮');
             }
-
-            await this._closeCitationPopup(page);
         } catch (e) {
-            this.logger.warn(`下载EndNote失败: ${e.message}`);
-            await this._closeCitationPopup(page);
+            this.logger.error(`下载EndNote失败: ${e.message}`);
+            await this._closeCitationPopup();
         }
 
-        return { endNoteLink, downloadedFilePath, parsedEndNote };
+        return {endNoteLink, downloadedFilePath, parsedEndNote};
     }
 
     /**
@@ -1701,39 +1547,21 @@ class GoogleScholarCrawler extends BaseCrawler {
         const filePaths = {
             successExcel: path.join(dataDir, `success_${timestamp}.xlsx`),
             failedExcel: path.join(dataDir, `failed_${timestamp}.xlsx`),
-            endnoteDir: endNoteDir,
-            // 前端「结果Excel」优先读 resultExcel
-            resultExcel: path.join(dataDir, `success_${timestamp}.xlsx`),
-            outputDir: this.currentOutputDir
+            endnoteDir: endNoteDir
         };
 
         // 导出 Excel
-        const exported = this.excelExporter.exportGoogleScholarResults(
+        this.excelExporter.exportGoogleScholarResults(
             data.successList,
             data.failedList,
             filePaths
-        ) || {};
-
-        // 若只有失败表，把展示路径指到失败表
-        if ((!data.successList || data.successList.length === 0) &&
-            data.failedList && data.failedList.length > 0) {
-            filePaths.resultExcel = filePaths.failedExcel;
-        }
-        if (exported.successExcel) filePaths.successExcel = exported.successExcel;
-        if (exported.failedExcel) filePaths.failedExcel = exported.failedExcel;
-
-        this.logger.info(`结果Excel: ${filePaths.resultExcel}`);
-        this.logger.info(`输出目录: ${this.currentOutputDir}`);
+        );
 
         return {
             successCount: data.successList.length,
             failedCount: data.failedList.length,
             outputDir: this.currentOutputDir,
-            filePaths,
-            // 顶层也挂一份，防止前端只读 result.xxx
-            resultExcel: filePaths.resultExcel,
-            successExcel: filePaths.successExcel,
-            failedExcel: filePaths.failedExcel
+            filePaths
         };
     }
 

@@ -7,17 +7,11 @@ const path = require('path');
  */
 async function isAnyCaptchaPresent(page) {
     const url = page.url();
-    if (url.includes('/sorry/') || url.includes('google.com/sorry')) return true;
+    if (url.includes('/sorry/index')) return true;
 
     try {
         const bodyText = await page.textContent('body');
-        if (!bodyText) return false;
-        const lower = bodyText.toLowerCase();
         if (bodyText.includes('请键入下图显示的字符以继续操作')) return true;
-        if (lower.includes("we're sorry")) return true;
-        if (lower.includes('automated queries')) return true;
-        if (lower.includes("can't process your request right now")) return true;
-        if (lower.includes('unusual traffic')) return true;
     } catch (e) {}
 
     const captchaSelectors = [
@@ -164,7 +158,7 @@ async function handleTraditionalCaptcha(page, context) {
  */
 async function handleAnyCaptcha(page, context) {
     const url = page.url();
-    if (url.includes('/sorry/') || url.includes('google.com/sorry')) {
+    if (url.includes('/sorry/index')) {
         await handleTraditionalCaptcha(page, context);
         return;
     }
@@ -174,17 +168,12 @@ async function handleAnyCaptcha(page, context) {
         bodyText = await page.textContent('body');
     } catch (e) {}
 
-    const lower = (bodyText || '').toLowerCase();
-    if (
-        bodyText.includes('请键入下图显示的字符以继续操作') ||
-        lower.includes("we're sorry") ||
-        lower.includes('automated queries')
-    ) {
+    if (bodyText.includes('请键入下图显示的字符以继续操作')) {
         await handleTraditionalCaptcha(page, context);
         return;
     }
 
-    await handleHumanCaptcha(page, context);
+    await      handleHumanCaptcha(page, context);
 }
 
 // utils/crawler-utils.js

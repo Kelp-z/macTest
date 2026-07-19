@@ -1755,19 +1755,6 @@
         return false;
     }
 
-    function clearErrorUI() {
-        try {
-            if (errorMsgEl) errorMsgEl.textContent = '';
-            currentErrorScreenshotUrl = null;
-            const screenshotContainer = document.getElementById('errorScreenshotContainer');
-            if (screenshotContainer) screenshotContainer.style.display = 'none';
-            const screenshotLink = document.getElementById('errorScreenshotLink');
-            if (screenshotLink) screenshotLink.removeAttribute('href');
-        } catch (e) {
-            // ignore
-        }
-    }
-
     function updateUI(data) {
         const {
             isRunning,
@@ -1820,28 +1807,34 @@
                 captchaArea.classList.add('hidden');
             }
         }
-        // 更新错误信息（无错误时必须清掉截图区，否则自动接取后旧报错一直挂着）
-        const screenshotContainer = document.getElementById('errorScreenshotContainer');
-        const screenshotLink = document.getElementById('errorScreenshotLink');
+        // 更新错误信息
         if (error) {
             // 记录详细错误到日志
+            // if (error.detail) addLog('error', error.detail);
             if (error.detail) addLog('error', error.userMessage || error.message || '未知错误');
+            // 只显示用户友好消息和类型
             let userMsg = error.userMessage || error.message || '未知错误';
             if (error.type) {
                 userMsg = `${userMsg} (${error.type})`;
             }
             errorMsgEl.textContent = userMsg;
-            if (error.screenshotPath) {
+            // 更新错误截图显示
+            const screenshotContainer = document.getElementById('errorScreenshotContainer');
+            const screenshotLink = document.getElementById('errorScreenshotLink');
+            if (error && error.screenshotPath) {
                 screenshotLink.href = error.screenshotPath;
                 screenshotContainer.style.display = 'flex';
-                currentErrorScreenshotUrl = error.screenshotPath;
             } else {
                 screenshotContainer.style.display = 'none';
+            }
+            if (error.screenshotPath) {
+                currentErrorScreenshotUrl = error.screenshotPath;
+            } else {
                 currentErrorScreenshotUrl = null;
             }
-        } else if (isRunning) {
-            // 新任务运行中：清掉上一任务残留报错
-            clearErrorUI();
+        } else {
+            errorMsgEl.textContent = '';
+            currentErrorScreenshotUrl = null;
         }
 
         // 停止请求中标签
@@ -1901,26 +1894,24 @@
             if (currentTask) {
                 updateResultTableByType(currentTask.type, result, flattenedData);
             }
-            // 更新文件路径（兼容 resultExcel / successExcel / failedExcel / outputDir）
-            const filePaths = result.filePaths || {};
-            const excelPath =
-                result.resultExcel ||
-                filePaths.resultExcel ||
-                result.successExcel ||
-                filePaths.successExcel ||
-                result.failedExcel ||
-                filePaths.failedExcel ||
-                result.outputDir ||
-                filePaths.outputDir ||
-                '';
-            if (excelPath) {
-                resultExcelEl.textContent = excelPath;
-            } else if (!resultExcelEl.textContent || resultExcelEl.textContent === '-') {
+            // 更新文件路径
+            const filePaths = result.filePaths;
+            if (filePaths) {
+                if (typeof filePaths === 'string') {
+                    resultExcelEl.textContent = filePaths;
+                } else if (Array.isArray(filePaths) && filePaths.length > 0) {
+                    resultExcelEl.textContent = filePaths[0];
+                } else if (filePaths.resultExcel) {
+                    resultExcelEl.textContent = filePaths.resultExcel;
+                } else if (filePaths.successExcel) {
+                    resultExcelEl.textContent = filePaths.successExcel;
+                } else {
+                    resultExcelEl.textContent = '-';
+                }
+            } else {
                 resultExcelEl.textContent = '-';
             }
-            // 有路径时不要被后续空 result 冲掉：仅在明确有新路径时更新
-        } else if (!resultExcelEl.textContent || resultExcelEl.textContent === '-') {
-            // 尚无结果时保持占位
+        } else {
             resultExcelEl.textContent = '-';
         }
 
@@ -2240,18 +2231,6 @@
         try {
             addLog('info', `开始接取任务 [ID: ${taskId}]，类型: ${task.type}`);
 
-            // 接取新任务前清掉上一任务残留的报错/干预 UI，避免一直挂着
-            clearErrorUI();
-            if (manualArea && !manualArea.classList.contains('hidden')) {
-                manualArea.classList.add('hidden');
-            }
-            if (captchaArea && !captchaArea.classList.contains('hidden')) {
-                captchaArea.classList.add('hidden');
-                captchaInput.value = '';
-                captchaResolveForIntervention = null;
-                clearCaptchaState();
-            }
-
             // 解析任务数据
             const papersData = safeParseJsonWithFix(task.requestData);
             addLog('info', `解析出 ${papersData.length} 条数据`);
@@ -2451,6 +2430,10 @@
                 isPolling = false;
                 return;
             }
+            // 已切换到别的任务时，忽略本轮旧轮询（防止二次完成把新任务 currentTask 清掉）
+            if (String(currentTask.id) !== String(taskId)) {
+                return;
+            }
 
             const apiInfo = apiMap[taskType];
             if (!apiInfo) {
@@ -2463,6 +2446,10 @@
             try {
                 const res = await apiRequest(`${apiInfo.base}/crawl/status`);
                 if (res.code === 200 && res.data) {
+                    // 状态返回期间任务可能已切换，勿再用旧结果更新/完结新任务
+                    if (!currentTask || String(currentTask.id) !== String(taskId)) {
+                        return;
+                    }
                     updateUI(res.data);
 
                     // 获取错误截图 URL
@@ -2474,7 +2461,7 @@
                     // 只要后端返回 isRunning = false 且 isStopping = false，才认为任务已完成
                     // isStopping=true 说明爬虫正在清理中，等下一轮轮询再判断
                     if (!res.data.isRunning && !res.data.isStopping) {
-                        // 先停掉本轮轮询，避免与自动接取的新任务抢状态
+                        // 先停轮询，避免 1s 内二次进入完成逻辑（会误清下一任务的 currentTask）
                         clearInterval(pollTimer);
                         pollTimer = null;
                         isPolling = false;
@@ -2534,7 +2521,6 @@
                         }
                         clearCaptchaState();
 
-                        // 失败任务的报错可短暂保留；自动接取下一任务前会再清一次
                         await checkAndTakeNextTask();
                     }
                 }
@@ -3464,14 +3450,6 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
             const {id, type, data: interventionData} = data;
             const source = data.source;      // 保存 source，后续提交用
             let result = null;
-
-            // 弹窗改为非阻塞：避免「我知道了」卡住导致后续自动接取界面一直挂着
-            const notifyIntervention = (opts) => {
-                if (window.electronAPI && window.electronAPI.showMessageBox) {
-                    window.electronAPI.showMessageBox(opts).catch(() => {});
-                }
-            };
-
             switch (type) {
                 case 'captcha-manual':
                     addLog('warn', interventionData.message || '检测到人机验证')
@@ -3482,13 +3460,17 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     // 仅人机验证时拉回浏览器
                     await requestShowBrowser();
 
-                    notifyIntervention({
-                        type: 'warning',
-                        title: '人机验证提醒',
-                        message: interventionData.message || '请在弹出的浏览器窗口中完成人机验证',
-                        detail: interventionData.instruction || '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
-                        buttons: ['我知道了']
-                    });
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'warning',
+                            title: '人机验证提醒',
+                            message: interventionData.message || '请在弹出的浏览器窗口中完成人机验证',
+                            detail: interventionData.instruction || '验证完成后爬虫将自动继续，请勿关闭浏览器窗口。',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        alert(interventionData.message || '请完成人机验证');
+                    }
 
                     result = 'notified'
                     break;
@@ -3500,13 +3482,17 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
 
                     await requestShowBrowser();
 
-                    notifyIntervention({
-                        type: 'info',
-                        title: '手动登录提示',
-                        message: interventionData.message || '请在弹出的浏览器窗口中手动登录',
-                        detail: interventionData.instruction || '登录完成后爬虫将自动继续',
-                        buttons: ['我知道了']
-                    });
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'info',
+                            title: '手动登录提示',
+                            message: interventionData.message || '请在弹出的浏览器窗口中手动登录',
+                            detail: interventionData.instruction || '登录完成后爬虫将自动继续',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        alert(interventionData.message || '请手动登录');
+                    }
 
                     result = 'notified';
                     break;
@@ -3519,20 +3505,24 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     if (manualModeTimer) clearTimeout(manualModeTimer);
                     manualModeTimer = setTimeout(() => {
                         if (!manualArea.classList.contains('hidden')) {
-                            addLog('warn', '手动操作超时（60秒），若无可用的页面，可点击停止按钮结束任务。');
+                            alert('手动操作超时（60秒），若无可用的页面，可点击停止按钮结束任务。');
                         }
                         manualModeTimer = null;
                     }, 60000);
 
                     await requestShowBrowser();
 
-                    notifyIntervention({
-                        type: 'info',
-                        title: '手动操作提示',
-                        message: interventionData.message || '请手动完成操作',
-                        detail: interventionData.instruction || '',
-                        buttons: ['我知道了']
-                    });
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'info',
+                            title: '手动操作提示',
+                            message: interventionData.message || '请手动完成操作',
+                            detail: interventionData.instruction || '',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        alert(interventionData.message || '请手动完成操作');
+                    }
 
                     // 等待用户点击"确认"按钮
                     // 创建一个 Promise
@@ -3555,8 +3545,8 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                             throw new Error(err.msg || '提交失败');
                         }
                         addLog('success', '手动操作已确认');
-                    } catch (err) {
-                        addLog('error', `提交手动确认失败: ${err.message}`);
+                    } catch (e) {
+                        addLog('error', `提交手动操作确认失败: ${e.message}`);
                     }
                     // 清理
                     manualArea.classList.add('hidden');
@@ -3564,7 +3554,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                         clearTimeout(manualModeTimer);
                         manualModeTimer = null;
                     }
-                    result = 'confirmed';
+                    result = 'confirmed';  // 提交给后端
                     break;
                 case 'captcha':
                     captchaResolveForIntervention = null; // 清空旧的
@@ -3584,14 +3574,18 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
                     // 学术猫等图片验证码 / 登录：仅此时拉回浏览器
                     await requestShowBrowser();
 
-                    notifyIntervention({
-                        type: 'info',
-                        title: '验证码',
-                        message: interventionData.message || '请输入验证码',
-                        detail: interventionData.instruction ||
-                            '请在界面输入验证码；也可直接在弹出的浏览器中手动登录。',
-                        buttons: ['我知道了']
-                    });
+                    if (window.electronAPI && window.electronAPI.showMessageBox) {
+                        await window.electronAPI.showMessageBox({
+                            type: 'info',
+                            title: '验证码',
+                            message: interventionData.message || '请输入验证码',
+                            detail: interventionData.instruction ||
+                                '请在界面输入验证码；也可直接在弹出的浏览器中手动登录。',
+                            buttons: ['我知道了']
+                        });
+                    } else {
+                        alert('请输入验证码（浏览器窗口也会弹出，可手动登录）');
+                    }
                     // 等待用户输入验证码
                     let code;
                     try {
@@ -3774,7 +3768,7 @@ Sackstein, S.：Contract grading and peer review;Stommel, J.：How to ungrade`;
 
         // 可切换不同任务类型测试
         //  const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE','SCOPUS_INCLUSION', 'SCOPUS_AUTHORS','SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS'];
-        const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE', 'SCOPUS_INCLUSION', 'SCOPUS_AUTHORS', 'SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS'];
+        const taskTypes = ['GOOGLE_SCHOLAR_VERIFICATION', 'GOOGLE_SCHOLAR_REFERENCE', 'SCOPUS_INCLUSION', 'SCOPUS_AUTHORS', 'SCI_INCLUSION', 'GOOGLE_SCHOLAR_AUTHORS', 'WOS_AUTHORS'];
         // const taskTypes = ['SCOPUS_INCLUSION'];
         const randomType = taskTypes[Math.floor(Math.random() * taskTypes.length)];
 

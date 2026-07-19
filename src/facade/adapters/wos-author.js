@@ -1,31 +1,19 @@
 const WosAuthorCrawler = require('../../crawlers/wos-author-crawler');
 
 function createWosAuthorCrawlerFacade() {
-  let crawlerInstance = null;
-
-  function getCrawler() {
-    if (!crawlerInstance) {
-      crawlerInstance = new WosAuthorCrawler();
-    }
-    return crawlerInstance;
-  }
-
+  const crawler = new WosAuthorCrawler();
   return {
     async start(authors, options = {}) {
-      await getCrawler().crawl({ keywords: authors, options });
+      await crawler.crawl({ keywords: authors, options });
     },
     async stop() {
-      if (crawlerInstance) {
-        await crawlerInstance.stop();
-      }
+      await crawler.stop();
     },
     getState() {
-      return getCrawler().getState();
+      return crawler.getState();
     },
     resetState() {
-      if (crawlerInstance) {
-        crawlerInstance.resetState();
-      }
+      crawler.resetState();
     },
     capabilities: {
       source: 'wos-author',

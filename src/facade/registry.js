@@ -47,34 +47,11 @@ function createCrawlerRegistry() {
     function getExistingFacade(source) {
         return activeInstances.get(source) || null;
     }
-
-    /**
-     * 启动某类爬虫前：仅停止其它来源的爬取逻辑，不关浏览器/标签
-     * （共享浏览器单窗口多标签：Scholar 标签在切到 WoS 时保留）
-     * @param {string} exceptSource
-     */
-    async function releaseOtherFacades(exceptSource) {
-        for (const [source, facade] of activeInstances.entries()) {
-            if (source === exceptSource) continue;
-            try {
-                const state = typeof facade.getState === 'function' ? await facade.getState() : null;
-                if (state && state.isRunning && typeof facade.stop === 'function') {
-                    console.log(`[registry] 切换任务：停止 ${source} 爬取（浏览器常驻，标签保留）`);
-                    await facade.stop().catch(() => {});
-                }
-                // 不再 resetState / 强制关浏览器
-            } catch (e) {
-                console.warn(`[registry] 停止 ${source} 失败: ${e.message}`);
-            }
-        }
-    }
-
     return {
         getCrawlerFacade,
         setActiveFacade,
         removeActiveFacade,
         getExistingFacade,
-        releaseOtherFacades,
         listCrawlerFacades: () => Object.keys(facades),
     };
 }
